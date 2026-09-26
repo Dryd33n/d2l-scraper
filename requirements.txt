@@ -3,3 +3,4 @@ keyring
 cryptography
 questionary
 rich
+markdownify

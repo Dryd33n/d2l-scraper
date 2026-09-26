@@ -6,6 +6,7 @@ download. JSON, exports, and pages are always rewritten.
 
 import json
 import re
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -17,9 +18,11 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from auth import ApiError, Session, SessionExpired, relogin
 from crawl import COURSE_FILES, COURSE_INFO, CourseCrawl, RemoteFile
 from embed import rewrite_html
+from markdown_copy import to_markdown
 from exports import write_calendar_ics, write_classlist_csv, write_grades_csv
-from pages import Context, Page, api_tail, document, pages_for, people, targets
+from pages import Context, Page, api_tail, document, markdown_page, pages_for, people, targets
 from prompts import DownloadOptions
+from runlog import CourseLog, write_logs
 from ui import console, warn
 
 CATEGORY_DIRS = {COURSE_INFO: "course info", COURSE_FILES: "_course-files"}  # every other category's folder is its key
@@ -82,16 +85,50 @@ class PageJob:
     key: str  # category
     page: Page
     dest: Path
+    markdown: Path | None = None  # where its Markdown copy goes, when its category was chosen for Markdown
 
 
 @dataclass
 class Summary:
-    downloaded: int = 0
-    downloaded_bytes: int = 0
-    skipped_existing: int = 0
-    skipped_videos: int = 0
-    pages: int = 0
-    failed: list[tuple[Path, str]] = field(default_factory=list)
+    """What a run did, per course (also what the logs are written from)."""
+    courses: list[CourseLog] = field(default_factory=list)
+    other_failures: list[tuple[Path, str]] = field(default_factory=list)  # outside any course folder
+    log: Path | None = None  # the archive-wide log, once written
+
+    def course(self, crawl: CourseCrawl) -> CourseLog:
+        return next(log for log in self.courses if log.crawl is crawl)
+
+    def fail(self, path: Path, reason: str) -> None:
+        log = next((log for log in self.courses if path.is_relative_to(log.folder)), None)
+        (log.failed if log else self.other_failures).append((path, reason))
+
+    @property
+    def downloaded(self) -> int:
+        return sum(len(log.downloaded) for log in self.courses)
+
+    @property
+    def downloaded_bytes(self) -> int:
+        return sum(log.downloaded_bytes for log in self.courses)
+
+    @property
+    def skipped_existing(self) -> int:
+        return sum(len(log.existing) for log in self.courses)
+
+    @property
+    def skipped_videos(self) -> int:
+        return sum(len(log.videos) for log in self.courses)
+
+    @property
+    def pages(self) -> int:
+        return sum(len(log.pages) for log in self.courses)
+
+    @property
+    def markdown(self) -> int:
+        return sum(len(log.markdown) for log in self.courses)
+
+    @property
+    def failed(self) -> list[tuple[Path, str]]:
+        return [f for log in self.courses for f in log.failed] + self.other_failures
 
 
 def course_dir(root: Path, crawl: CourseCrawl) -> Path:
@@ -104,8 +141,9 @@ def category_dir(root: Path, crawl: CourseCrawl, key: str) -> Path:
     return course_dir(root, crawl) / CATEGORY_DIRS.get(key, key)
 
 
-def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job], list[PageJob]]:
-    """Decide where every file and page goes. JSON, export, and page names are claimed first so files can't take them."""
+def plan(root: Path, crawls: list[CourseCrawl], markdown: list[str] = ()) -> tuple[Namer, list[Job], list[PageJob]]:
+    """Decide where every file and page goes, with Markdown copies for the categories in `markdown`.
+    JSON, export, and page names are claimed first so files can't take them."""
     namer = Namer()
     jobs, page_jobs = [], []
     for crawl in crawls:
@@ -119,7 +157,9 @@ def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job], list[
                 namer.claim(base, EXPORTS[key][0])
             for page in pages_for(key, result):
                 directory = base.joinpath(*(safe_name(part) for part in page.path))
-                page_jobs.append(PageJob(crawl, key, page, namer.claim(directory, page.name)))
+                dest = namer.claim(directory, page.name)
+                md = namer.claim(directory, f"{dest.stem}.md") if key in markdown and page.markdown else None
+                page_jobs.append(PageJob(crawl, key, page, dest, md))
             for f in result.files:
                 directory = base.joinpath(*(safe_name(part) for part in f.path))
                 jobs.append(Job(crawl, f, namer.claim(directory, f.name)))
@@ -146,9 +186,10 @@ def write_metadata(root: Path, crawls: list[CourseCrawl]) -> list[tuple[Path, st
     return failed
 
 
-def write_pages(page_jobs: list[PageJob], jobs: list[Job]) -> tuple[int, list[tuple[Path, str]]]:
-    """Render every generated page, linking to wherever the download put each file. Returns (written, failures)."""
-    written, failed = 0, []
+def write_pages(page_jobs: list[PageJob], jobs: list[Job]) -> tuple[list[PageJob], list[PageJob], list[tuple[Path, str]]]:
+    """Render every generated page (and its Markdown copy), linking to wherever the download put each file.
+    Returns (pages written, pages whose Markdown copy was written, failures)."""
+    written, markdown, failed = [], [], []
     for crawl in {id(pj.crawl): pj.crawl for pj in page_jobs}.values():
         files = {api_tail(j.file.url, crawl.course.id): j.dest for j in jobs if j.crawl is crawl}
         names = people(crawl)
@@ -165,10 +206,23 @@ def write_pages(page_jobs: list[PageJob], jobs: list[Job]) -> tuple[int, list[tu
                     text = document(ctx, pj.page, rewrite_html(pj.page.render(ctx), None, ctx))
                 pj.dest.parent.mkdir(parents=True, exist_ok=True)
                 pj.dest.write_bytes(text.encode("utf-8"))
-                written += 1
+                written.append(pj)
             except Exception as e:  # one odd record shouldn't cost the other pages
                 failed.append((pj.dest, f"{type(e).__name__}: {e}"))
-    return written, failed
+                continue
+            if pj.markdown is None:
+                continue
+            ctx.embed = False  # the copy links images to their files instead of embedding them
+            try:
+                if pj.page.standalone:
+                    text = to_markdown(pj.page.render(ctx))
+                else:
+                    text = markdown_page(ctx, pj.page, rewrite_html(pj.page.render(ctx), None, ctx, embed=False))
+                pj.markdown.write_bytes(text.encode("utf-8"))
+                markdown.append(pj)
+            except Exception as e:
+                failed.append((pj.markdown, f"{type(e).__name__}: {e}"))
+    return written, markdown, failed
 
 
 def _already_have(job: Job) -> bool:
@@ -195,24 +249,49 @@ def _fetch(p: Playwright, session: Session, job: Job, progress: Progress) -> byt
         progress.start()
 
 
-def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options: DownloadOptions) -> Summary:
+def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options: DownloadOptions,
+             started: datetime | None = None) -> Summary:
+    """Write metadata, download files, write pages, then append this run to the logs. The logs are
+    written even when the run stops early; `started` is when the run began (before the crawl)."""
     root = options.output
-    summary = Summary()
-    summary.failed += write_metadata(root, crawls)
+    started = started or datetime.now().astimezone()
+    summary = Summary([CourseLog(c, course_dir(root, c)) for c in crawls])
+    stopped = None
+    try:
+        for path, reason in write_metadata(root, crawls):
+            summary.fail(path, reason)
 
-    _, jobs, page_jobs = plan(root, crawls)
-    wanted = [j for j in jobs if options.videos or not j.file.is_video]
-    summary.skipped_videos = len(jobs) - len(wanted)
-    todo = []
-    for job in wanted:
-        if _already_have(job):
-            summary.skipped_existing += 1
-        else:
-            todo.append(job)
-    if todo:
-        _download_files(p, session, todo, summary)
-    summary.pages, failed = write_pages(page_jobs, jobs)  # after the files, so links know what's on disk
-    summary.failed += failed
+        _, jobs, page_jobs = plan(root, crawls, options.markdown)
+        todo = []
+        for job in jobs:
+            log = summary.course(job.crawl)
+            if job.file.is_video and not options.videos:
+                log.videos.append((job.dest, job.file.size))
+            elif _already_have(job):
+                log.existing.append(job.dest)
+            else:
+                todo.append(job)
+        if todo:
+            _download_files(p, session, todo, summary)
+
+        written, markdown, failed = write_pages(page_jobs, jobs)  # after the files, so links know what's on disk
+        for pj in written:
+            summary.course(pj.crawl).pages.append(pj.dest)
+        for pj in markdown:
+            summary.course(pj.crawl).markdown.append(pj.markdown)
+        for path, reason in failed:
+            summary.fail(path, reason)
+    except KeyboardInterrupt:
+        stopped = "cancelled"
+        raise
+    except Exception as e:
+        stopped = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        try:
+            summary.log = write_logs(summary.courses, root, started, datetime.now().astimezone(), stopped, options)
+        except OSError as e:
+            warn(f"Couldn't write the download log: {e}")
     return summary
 
 
@@ -235,10 +314,9 @@ def _download_files(p: Playwright, session: Session, todo: list[Job], summary: S
                 partial = job.dest.with_name(job.dest.name + ".part")
                 partial.write_bytes(data)
                 partial.replace(job.dest)  # never leave a half-written file under the real name
-                summary.downloaded += 1
-                summary.downloaded_bytes += len(data)
+                summary.course(job.crawl).downloaded.append((job.dest, len(data)))
             except SessionExpired:
                 raise  # re-login itself failed; nothing sensible to continue with
             except Exception as e:
-                summary.failed.append((job.dest, f"{type(e).__name__}: {e}"))
+                summary.fail(job.dest, f"{type(e).__name__}: {e}")
             progress.advance(task, job.file.size or 0)

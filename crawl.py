@@ -73,6 +73,7 @@ class CategoryResult:
     data: Any = None  # raw API JSON
     error: str | None = None  # set when the category couldn't be crawled
     html_pages: list[HtmlPage] = field(default_factory=list)  # content only
+    missing: list[str] = field(default_factory=list)  # course files only: referenced, but not on Brightspace
 
 
 @dataclass
@@ -362,12 +363,12 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
             for text in _strings(result.data):
                 add(html_refs(text, None))  # rich text: relative references can't be resolved
 
-    queue, missing = list(wanted.items()), 0
+    queue = list(wanted.items())
     for i, (key, embedded) in enumerate(queue):  # stylesheets append what they reference while this runs
         status(f"linked files {i + 1}/{len(queue)}")
         exists, size, headers = s.head(key)
         if not exists:
-            missing += 1
+            r.missing.append(key)
             continue
         folder, name = local_folder(key, embedded)
         if post_image := view_attachment(key):
@@ -377,7 +378,7 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
             try:
                 data = s.fetch(key)  # fetched now to find the fonts and images it uses
             except ApiError:
-                missing += 1
+                r.missing.append(key)
                 continue
             for ref in css_refs(decode(data), BASE_URL + key):
                 if (k := canonical(ref.url)) and k not in wanted:
@@ -387,8 +388,8 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
 
     r.items = len(r.files)
     notes = [plural(len(html_pages), "HTML page")] if html_pages else []
-    if missing:
-        notes.append(f"{missing} missing on Brightspace")
+    if r.missing:
+        notes.append(f"{len(r.missing)} missing on Brightspace")
     r.note = " · ".join(notes)
     return r
 

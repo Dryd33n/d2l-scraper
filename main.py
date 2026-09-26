@@ -1,6 +1,7 @@
 """D2L scraper entry point: log in, pick courses and categories, crawl, review, choose options, download."""
 
 import sys
+from datetime import datetime
 
 from playwright.sync_api import sync_playwright
 from rich.markup import escape
@@ -37,6 +38,7 @@ def main() -> None:
             sys.exit(1)
 
         console.print()
+        started = datetime.now().astimezone()
         crawls = crawl(session, selected, categories)
         ok(f"Crawled {len(selected)} course{'s' if len(selected) > 1 else ''}")
         console.print()
@@ -52,7 +54,7 @@ def main() -> None:
             sys.exit(1)
 
         console.print()
-        summary = download(p, session, crawls, options)
+        summary = download(p, session, crawls, options, started)
         print_summary(summary, options)
 
 
@@ -63,14 +65,15 @@ def print_summary(summary: Summary, options: DownloadOptions) -> None:
     if summary.skipped_videos:
         ok(f"Skipped {plural(summary.skipped_videos, 'video')} [dim](not opted in)[/]")
     if summary.pages:
-        ok(f"Wrote {plural(summary.pages, 'page')}")
-    if options.markdown:
-        warn("Markdown copies aren't implemented yet; nothing was converted.")
+        copies = f" [dim](+ {summary.markdown} as Markdown)[/]" if summary.markdown else ""
+        ok(f"Wrote {plural(summary.pages, 'page')}{copies}")
     for path, reason in summary.failed[:10]:
         console.print(f"[red]✗[/] {escape(str(path.relative_to(options.output)))} [dim]{escape(reason)}[/]")
     if len(summary.failed) > 10:
         console.print(f"[red]✗[/] …and {len(summary.failed) - 10} more failures")
     console.print(f"\nArchive: [bold]{escape(str(options.output))}[/]")
+    if summary.log:
+        console.print(f"Log: [bold]{escape(str(summary.log))}[/] [dim](and one in each course folder)[/]")
 
 
 if __name__ == "__main__":

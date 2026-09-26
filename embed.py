@@ -248,11 +248,15 @@ def rewrite_css(css: str, base: str | None, links: Links, depth: int = 0) -> str
     return CSS_URL.sub(url_, CSS_IMPORT.sub(import_, css))
 
 
-def rewrite_html(text: str, base: str | None, links: Links) -> str:
+def rewrite_html(text: str, base: str | None, links: Links, embed: bool = True) -> str:
     """Rewrite every reference in an HTML page or fragment (see the module docstring). With no base,
-    relative references are left alone, which keeps the generated pages' own relative links intact."""
+    relative references are left alone, which keeps the generated pages' own relative links intact.
+    With embed=False (for Markdown copies) images link to their files on disk instead of being
+    embedded, and scripts and stylesheets are left as they are."""
 
     def block(m) -> str:
+        if not embed:
+            return m[0]
         kind, attrs, body = m[1].lower(), m[2], m[3]
         if kind == "style":
             return f"<{m[1]}{attrs}>{rewrite_css(body, base, links)}</{m[1]}>"
@@ -280,7 +284,7 @@ def rewrite_html(text: str, base: str | None, links: Links) -> str:
 
     def link_tag(m, attrs: str) -> str:
         url = absolute(_get_attr(attrs, "href") or "", base)
-        path = links.local(url) if url else None
+        path = links.local(url) if url and embed else None
         if path is not None and re.search(r"stylesheet", _get_attr(attrs, "rel") or "", re.I):
             media = _get_attr(attrs, "media")
             media_attr = f' media="{html.escape(media)}"' if media else ""
@@ -301,7 +305,7 @@ def rewrite_html(text: str, base: str | None, links: Links) -> str:
                 continue
             path = links.local(url)
             if embedded:
-                value = data_uri(path) if path else url
+                value = (data_uri(path) if embed else links.href(path)) if path else url
                 if path and name == "img":
                     attrs = _set_attr(attrs, "srcset", None)  # would otherwise win over the embedded src
             elif path is not None:

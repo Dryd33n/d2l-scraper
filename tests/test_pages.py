@@ -2,7 +2,7 @@ import re, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
 from courses import Course
-from crawl import COURSE_INFO, CategoryResult, CourseCrawl, RemoteFile
+from crawl import COURSE_FILES, COURSE_INFO, CategoryResult, CourseCrawl, RemoteFile
 from download import Job, plan, write_pages
 from pages import Context, Page, api_tail, document, pages_for, rich, when
 
@@ -137,7 +137,7 @@ grades = {
 }
 [page] = pages_for("grades", CategoryResult(data=grades))
 html = page.render(Context(CourseCrawl(course, {}), tmp / "g.html", None, {}, {}))
-names = re.findall(r"<tr(?: class=\"group\")?><td>([^<]+)</td>", html)
+names = re.findall(r"<tr(?: class=\"group\")?><td>(?:<strong>)?([^<]+)(?:</strong>)?</td>", html)
 check("uncategorised first, then category and its items", names, ["Final", "Labs", "Lab 1", "Lab 2"])
 check("ungraded item shows out of", "– / 5" in html, True)
 check("grade comment row", '<tr class="comment"><td colspan="4"><div class="body"><p>good</p>' in html, True)
@@ -161,8 +161,8 @@ check("pages planned", sorted(str(pj.dest.relative_to(root)).replace("\\", "/") 
       ["Spring 2025 TEST 100/announcements/announcements.html", "Spring 2025 TEST 100/course info/course.html"])
 jobs[0].dest.parent.mkdir(parents=True)
 jobs[0].dest.write_bytes(b"abc")
-written, failed = write_pages(page_jobs, jobs)
-check("pages written", (written, failed), (2, []))
+written, _, failed = write_pages(page_jobs, jobs)
+check("pages written", (len(written), failed), (2, []))
 html = (root / "Spring 2025 TEST 100/announcements/announcements.html").read_text(encoding="utf-8")
 check("announcements newest first", html.index(">Hi<") < html.index(">Older<"), True)
 check("author from classlist", "Prof X" in html, True)
@@ -172,8 +172,8 @@ check("self-contained style", "<style>" in html and "<link" not in html, True)
 
 bad = CourseCrawl(course, {"announcements": CategoryResult(data=[{"Id": 1, "Attachments": [{}]}])})  # attachment without FileId
 _, jobs, page_jobs = plan(tmp / "bad", [bad])
-written, failed = write_pages(page_jobs, jobs)
-check("broken record recorded as failure, not raised", (written, len(failed)), (0, 1))
+written, _, failed = write_pages(page_jobs, jobs)
+check("broken record recorded as failure, not raised", (len(written), len(failed)), (0, 1))
 
 # ---------- content: outline, links, shortcuts, quickLinks ----------
 
@@ -201,7 +201,7 @@ root = tmp / "content-archive"
 _, jobs, page_jobs = plan(root, [crawl])
 jobs[0].dest.parent.mkdir(parents=True)
 jobs[0].dest.write_bytes(b"%PDF")
-written, failed = write_pages(page_jobs, jobs)
+written, _, failed = write_pages(page_jobs, jobs)
 check("content pages written", failed, [])
 base = root / "Spring 2025 TEST 100" / "content"
 check("content files", sorted(str(p.relative_to(base)).replace("\\", "/") for p in base.rglob("*") if p.is_file()),
@@ -217,3 +217,38 @@ check("outline: viewContent link in description goes to the file", "<a href=\"01
 links_page = (base / "links.html").read_text(encoding="utf-8")
 check("links page lists link topics only", re.findall(r'<tr id="topic-(\d+)">', links_page), ["13", "14", "15"])
 check("links page: LTI note", "(only works inside Brightspace)" in links_page, True)
+
+# ---------- Markdown copies ----------
+
+from markdown_copy import to_markdown
+check("to_markdown: body only, no scripts/styles",
+      to_markdown("<html><head><title>t</title><style>p{}</style></head><body><h2>Hi</h2><script>x()</script><p>a <b>b</b></p></body></html>"),
+      "## Hi\n\na **b**\n")
+
+img = tmp / "md" / "Spring 2025 TEST 100" / "_course-files" / "_assets" / "pic.png"
+news = [{"Id": 1, "Title": "Hi", "Body": rt('<p>see <img src="https://bright.uvic.ca/content/enforced/1234-X/pic.png" alt="pic"></p>'),
+         "StartDate": "2025-01-02T00:00:00Z", "Attachments": []}]
+crawl = CourseCrawl(course, {
+    "announcements": CategoryResult(data=news),
+    "grades": CategoryResult(data=grades),
+    "content": CategoryResult(data=toc, html_pages=[HtmlPage(12, ("01 Week 1",), "page.html", f"{LE}/content/topics/12/file",
+                                                            "https://bright.uvic.ca/content/enforced/x/page.html", page_html)]),
+    COURSE_FILES: CategoryResult(files=[RemoteFile(("_assets",), "pic.png", "/content/enforced/1234-X/pic.png", 3)]),
+})
+root = tmp / "md"
+_, jobs, page_jobs = plan(root, [crawl], ["announcements", "content"])
+img.parent.mkdir(parents=True)
+img.write_bytes(b"PNG")
+written, markdown, failed = write_pages(page_jobs, jobs)
+check("markdown only for chosen kinds, not shortcuts", sorted(str(pj.markdown.relative_to(root)).replace("\\", "/") for pj in page_jobs if pj.markdown), [
+    "Spring 2025 TEST 100/announcements/announcements.md",
+    "Spring 2025 TEST 100/content/01 Week 1/page.md",
+    "Spring 2025 TEST 100/content/content.md",
+    "Spring 2025 TEST 100/content/links.md",
+])
+check("markdown written", (len(markdown), failed), (4, []))
+md = (root / "Spring 2025 TEST 100/announcements/announcements.md").read_text(encoding="utf-8")
+check("markdown: header", md.startswith("Spring 2025 TEST 100\n\n# Announcements\n\n## Hi"), True)
+check("markdown: image links to its file", "![pic](../_course-files/_assets/pic.png)" in md and "data:" not in md, True)
+check("html still embeds the image", "data:image/png;base64," in (root / "Spring 2025 TEST 100/announcements/announcements.html").read_text(encoding="utf-8"), True)
+check("markdown: content page keeps rewritten links", "[quiz](" in (root / "Spring 2025 TEST 100/content/01 Week 1/page.md").read_text(encoding="utf-8"), True)

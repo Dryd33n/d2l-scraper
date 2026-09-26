@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from auth import BASE_URL
 from crawl import COURSE_INFO, LABELS, CategoryResult, CourseCrawl, HtmlPage, walk_toc
+from markdown_copy import to_markdown
 from embed import absolute, brightspace_link, canonical, decode, is_lti, rewrite_html, view_attachment
 from ui import format_size
 
@@ -76,6 +77,7 @@ class Context:
     people: dict[str, str]  # user id -> display name, from the classlist when it was crawled
     pages: dict[str, Path] = field(default_factory=dict)  # Page.key -> where that page was written
     targets: Targets = field(default_factory=Targets)
+    embed: bool = True  # False while rendering a Markdown copy: images link to their files instead
 
     def href(self, target: Path) -> str:
         return quote(os.path.relpath(target, self.dest.parent).replace(os.sep, "/"))
@@ -140,6 +142,7 @@ class Page:
     crumbs: tuple[str, ...] = ()  # shown between the course name and the title, e.g. ("Discussions", forum)
     key: str | None = None  # what other pages link to, e.g. "dropbox/folders/12", "quizzes"
     standalone: bool = False  # render returns the finished file (content pages, shortcuts)
+    markdown: bool = True  # gets a Markdown copy when its category is chosen (not shortcuts)
 
 
 def api_tail(url: str, course_id: int) -> str:
@@ -276,6 +279,14 @@ def document(ctx: Context, page: Page, body: str) -> str:
 </body>
 </html>
 """
+
+
+def markdown_page(ctx: Context, page: Page, body: str) -> str:
+    """The Markdown copy of a generated page: breadcrumb, title, body, archive date."""
+    crumbs = " › ".join([ctx.crawl.course.name, *page.crumbs])
+    saved = datetime.now().astimezone().isoformat(timespec="seconds")
+    saved_text = re.sub(r"<[^>]+>", "", when(saved))
+    return f"{crumbs}\n\n# {page.title}\n\n{to_markdown(body)}\n---\n\nArchived from Brightspace {saved_text}\n"
 
 
 # ---------- course info ----------
@@ -543,7 +554,8 @@ def _grades(data: dict, ctx: Context) -> str:
         else:
             points, weighted, grade = (f"– / {num(max_points)}" if max_points else "–"), "", ""
         cls = ' class="group"' if group else ""
-        out = f'<tr{cls}><td>{esc(name)}</td><td class="num">{esc(points)}</td><td class="num">{esc(weighted)}</td><td class="num">{esc(grade)}</td></tr>'
+        label = f"<strong>{esc(name)}</strong>" if group else esc(name)  # bold in the Markdown copy too
+        out = f'<tr{cls}><td>{label}</td><td class="num">{esc(points)}</td><td class="num">{esc(weighted)}</td><td class="num">{esc(grade)}</td></tr>'
         if value and _has_text(value.get("Comments")):
             out += f'<tr class="comment"><td colspan="4"><div class="body">{rich(value["Comments"])}</div></td></tr>'
         return out
@@ -702,7 +714,7 @@ def _links(toc: dict, ctx: Context) -> str:
 
 
 def _html_topic(page: HtmlPage, ctx: Context) -> str:
-    return rewrite_html(decode(page.html), page.base, ctx)
+    return rewrite_html(decode(page.html), page.base, ctx, ctx.embed)
 
 
 def _redirect(url: str, title: str, ctx: Context) -> str:
@@ -731,9 +743,9 @@ def _content_pages(toc: dict, result: CategoryResult) -> list[Page]:
                 continue
             title = t.get("Title") or "Untitled"
             if t.get("ActivityType") in TOOL_SHORTCUTS or brightspace_link(url) and not is_lti(url):
-                pages.append(Page(path, f"{title}.html", title, partial(_redirect, url, title), standalone=True))
+                pages.append(Page(path, f"{title}.html", title, partial(_redirect, url, title), standalone=True, markdown=False))
             else:
-                pages.append(Page(path, f"{title}.url", title, partial(_url_shortcut, url), standalone=True))
+                pages.append(Page(path, f"{title}.url", title, partial(_url_shortcut, url), standalone=True, markdown=False))
     return pages
 
 

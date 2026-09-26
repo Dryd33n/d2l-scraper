@@ -7,7 +7,7 @@
 
 ## 0. Where we left off (2026-09-26)
 
-**Done:** login + encrypted session, course/category pickers, deep crawl, review screen, download options (videos, Markdown, output folder), phase 1 download (all files, raw JSON, `grades.csv`, `classlist.csv`, `calendar.ics`, skip-if-present, retries, re-login mid-download), phase 2 generated HTML pages (`pages.py`), phase 3 self-contained content pages and linked files (`embed.py`); see 4.6. Tested on real courses; 155 tests in `tests/`.
+**Done:** login + encrypted session, course/category pickers, deep crawl, review screen, download options (videos, Markdown, output folder), phase 1 download (all files, raw JSON, `grades.csv`, `classlist.csv`, `calendar.ics`, skip-if-present, retries, re-login mid-download), phase 2 generated HTML pages (`pages.py`), phase 3 self-contained content pages and linked files (`embed.py`), phase 4 Markdown copies (`markdown_copy.py`), phase 5 end-of-run logs (`runlog.py`, section 7); see 4.6. Tested on real courses; 183 tests in `tests/`.
 
 **Phase 3 approach:** the crawl fetches each HTML content page (small) and lists what it references; every downloadable reference (images, `/shared/…` template CSS/JS, linked documents, linked videos) becomes an ordinary crawled file. So the review shows real sizes and linked-video counts, re-runs skip what's on disk, and nothing is fetched twice. The download then writes each HTML page self-contained, embedding its images/CSS/JS from those downloaded copies, and rewrites Brightspace links to the local copies (phase 2 pages, content files).
 
@@ -17,9 +17,7 @@
 3. **`_course-files/` is per course** (`<course>/_course-files/`), shared by content, announcements, assignments, and discussions.
 4. **The crawl fetches HTML pages** and checks the size of each linked file; a slower crawl is fine.
 
-**Next:**
-- Phase 4: Markdown copies (`markdownify`) for the kinds chosen in the options dialog
-- Phase 5: end-of-run log file (section 7)
+**Next:** all planned phases are done. Open items: sync of changed/removed items (section 6), a browsable `index.html` (section 6), any-D2L-instance support (section 1).
 
 **Testing notes:** `tests/fixtures/*.pkl` are crawl results pickled from real courses (git-ignored, personal data). Regenerate with `python tests/run_crawl.py tests/fixtures/with_videos.pkl 382134,504907` and `… without_videos.pkl 397411,376123,507204,293541`. The pickles predate the current grades/course-info JSON shape, so `test_pages.py` uses hand-built records; regenerate them before relying on them for new tests. Prompt tests drive questionary with `create_pipe_input`; tests run inside `sync_playwright()` because prompts must work while Playwright owns the main thread's event loop.
 
@@ -133,6 +131,13 @@ Phase 3 — DONE: self-contained content pages and linked files (`embed.py`, cou
 - The review shows a "Linked files" row; linked videos count in the Videos row (CSC 230: 39 videos, 1.0 GB)
 - Tested live on ATWP 135 (UVic template pages, ~690 KB each with Bootstrap/Font Awesome inlined; they render with the network blocked), CSC 230 (lab video pages), MATH 211 (post images)
 - Left for later: files from earlier runs that are no longer produced aren't removed (sync); Google Fonts and `s.brightspace.com` stylesheets stay external (decided in 5.2); relative image paths in rich text can't be resolved (no base URL); the instructor-only `dropbox/admin` links stay absolute
+
+Phase 4 — DONE: Markdown copies (`markdown_copy.py`, `markdownify`)
+- For the kinds ticked in the options dialog, each generated page gets a `.md` next to its `.html` (same name; claimed in the plan so it can't collide with a downloaded file). Content: the HTML topic pages, `content.html`, and `links.html`; shortcuts never get one
+- Generated pages: breadcrumb line, `# Title`, the body, and the archive date. Content pages: the page body only (scripts, styles, `<head>` dropped)
+- **Images link to their files on disk** (`_course-files/_assets/…`, `attachments/…`) instead of being embedded (decided 2026-09-26): the `.md` stays readable and images show in any Markdown viewer. Links are the same as in the HTML (archived copies, else Brightspace)
+- Grade category rows are bold; tables (grades, rubrics, links) become Markdown tables
+- Tested live on the same three courses with every kind ticked: 75 copies, no failures
 
 - Folder structure: see 5.3
 - Filename rules: whitespace collapsed; `<>:"/\|?*` and control characters → `_`; trailing dots/spaces trimmed; Windows reserved names (`CON`, `COM1`, …) prefixed with `_`; names capped at 80 characters keeping the extension; file names shortened to keep paths under 250 characters where the folder allows
@@ -339,8 +344,12 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 
 ## 7. Logging & Reporting
 
-- End-of-run summary (downloaded / skipped / failed / link-only): _TBD_
-- Log file location and verbosity: _TBD_
+DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plus one for the whole archive, both detailed.
+
+- **`<course>/download log.txt`:** run start/end and length, result (completed, or stopped early with the reason: cancelled, session expired, error), options, course code/id/term; the crawl per category (items, files, size, links, notes, or why it couldn't be crawled); every file downloaded with its size; the number already in the archive (not listed, so re-runs stay short); every video skipped with its size; files linked from pages but missing on Brightspace; every page and Markdown copy written; every failure with its reason
+- **`<archive>/download log.txt`:** the same header, a table with one row per course (downloaded, size, skipped, videos skipped, pages, failures) and a total, categories that couldn't be crawled, and every failure across courses (paths from the archive root)
+- Each run is **appended**, so the logs keep every run's history. Logs are written even when a run stops early (in a `finally`), so a cancelled or expired run still records what it did
+- The terminal summary ends with the log's path; its counts now come from the same per-course records as the logs
 
 ---
 
