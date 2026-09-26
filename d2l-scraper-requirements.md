@@ -1,6 +1,6 @@
 # D2L Scraper — Requirements
 
-> Status: In progress (login, course/category selection, and deep crawl built; download next)
+> Status: In progress (phase 1 download built: files, raw JSON, CSV, ICS; generated HTML pages next)
 > Last updated: 2026-09-26
 
 ---
@@ -28,13 +28,13 @@ UVic only for now, we will attempt to implement any D2L instance later
 - [x] Save the session with `storage_state` to a local file
 - [x] Before each run, check the session with `/d2l/api/lp/{ver}/users/whoami`
 - [x] If the session is invalid or expired, prompt for a fresh login
-- [ ] Re-check periodically during long downloads; pause instead of failing silently
+- [x] Detect expiry during downloads (login redirect, or 403 + failed `whoami`), pause, re-login in the browser, resume
 
 **Details:**
 - Session file: `.auth/state.enc` (git-ignored)
 - Security: encrypted with Fernet; the key is generated on first run and kept in the OS keychain (`keyring`, service `d2l-scraper`). Plaintext never touches disk.
 - An invalid session answers `whoami` with HTTP 403 (not a redirect); API calls use `max_redirects=0` so a login redirect is never mistaken for data.
-- How often to re-check the session during downloads: _TBD_
+- Session expiry is detected on failure rather than by periodic re-checks
 - Possible later hardening: keep only `bright.uvic.ca` cookies (the saved state also holds SSO provider cookies, ~87 KB)
 
 ---
@@ -44,8 +44,8 @@ UVic only for now, we will attempt to implement any D2L instance later
 **Approach:** Read-only calls to the D2L Valence JSON API using session cookies. No HTML scraping unless an endpoint doesn't exist.
 
 - [x] Resolve API versions at startup with `/d2l/api/versions/` (currently `lp` 1.63, `le` 1.99)
-- [ ] Rate limit: _TBD_ (currently sequential requests, no delay)
-- [ ] Retry policy for failed requests: _TBD_
+- [x] Rate limit: sequential requests, one at a time, no extra delay
+- [x] Retry policy: up to 3 retries on network errors, 429, and 5xx, waiting 1s, 2s, 4s
 - [x] Handling of 403s (hidden or unreleased content): the crawl records the category as "not available" and continues
 
 ---
@@ -86,10 +86,14 @@ One more dialog after the review screen, before anything is downloaded:
 - [x] **Convert to Markdown:** choose which kinds of generated page also get a `.md` copy: content HTML pages, announcements, assignments, discussions, quizzes, grades, course info. Downloaded files are never converted; the `.html` is always kept.
 
 ### 4.6 Download
-- Folder structure: decided, see 5.3
-- Filename sanitizing rules: _TBD_ (Windows-reserved characters, trailing dots/spaces, path length, duplicate names → " (2)")
-- Skip already-downloaded files: _TBD_
-- Metadata: raw API JSON per category (`<category>.json`), decided in 5.4
+Phase 1 — DONE: raw JSON, all files, `grades.csv`, `classlist.csv`, `calendar.ics`.
+
+- Folder structure: see 5.3
+- Filename rules: whitespace collapsed; `<>:"/\|?*` and control characters → `_`; trailing dots/spaces trimmed; Windows reserved names (`CON`, `COM1`, …) prefixed with `_`; names capped at 80 characters keeping the extension; file names shortened to keep paths under 250 characters where the folder allows
+- Duplicates in the same folder (case-insensitive) → `name (2).ext`; the same crawl always yields the same paths
+- Skip-if-present: a file is skipped when it exists with the size the crawl reported (or is non-empty when the size is unknown). JSON and exports are rewritten every run
+- Files are written to `<name>.part` and renamed when complete
+- Metadata: raw API JSON per category (`<category>.json`; `course info/course.json`)
 
 ---
 
@@ -211,7 +215,7 @@ Tier: **Easy** = direct API download · **Medium** = needs assembling or rewriti
 ### 5.3 Folder layout
 
 ```
-<output root>/                          outside this repo (archives contain classlist personal data)
+<output root>/                          default <repo>/D2L Archive/, git-ignored (contains classlist personal data)
   Spring 2025 CSC 230 A01 - A04 X/      course folder = D2L course name, which already includes the term
     course info/                        always included
       course.html   course.json   course-image.jpg   (+ overview attachment, if any)
@@ -254,7 +258,7 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 4. **Videos:** opt-in, asked in the download options dialog after the review (4.5).
 5. **HTML page dependencies:** downloaded and embedded into the HTML files (self-contained pages). Linked documents are saved as separate files. Trade-off: template CSS/JS is duplicated in every page, so pages are larger.
 6. **New categories:** **calendar** is added to the category picker. **Course info** is always included, without asking.
-7. **Classlist:** keep everything, including other students' emails. The output folder must stay outside this git repo.
+7. **Classlist:** keep everything, including other students' emails. The archive lives in the repo's git-ignored `D2L Archive/` folder (or outside the repo); it must never be committed.
 8. **Quizzes:** metadata only (the API blocks questions and attempts). HTML by default, Markdown if chosen, like other generated pages. Scraping attempt-review pages through the browser is possible later.
 9. **Out of scope:** Locker, ePortfolio, awards, and email.
 10. **Markdown conversion scope:** only pages the tool generates from HTML/JSON (content HTML pages, announcements, assignments, discussions, quizzes, grades, course info). Downloaded files (PDF, slides, images, video, …) always stay in their original format. The `.html` is kept alongside as the backup.
@@ -263,7 +267,11 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 
 ### 5.5 Implementation notes
 
-- For HTML topics, the API `…/file` endpoint and the topic's `/content/enforced/…` URL returned different byte counts (449 vs 6273 for the same page). Check which one is the real authored page before building the HTML pipeline.
+- HTML topics: use the API `…/file` endpoint. It returns the page as authored; the topic's `/content/enforced/…` URL wraps it in Brightspace viewer scripts (447 vs 6273 bytes for the same page).
+- Broken content topics (`IsBroken: true`, `Url: null`) have no file on Brightspace (404). The crawl skips them and notes "N broken files" (5 in ENGR 240).
+- Some discussion topics return HTTP 500 on every attempt (2 of 21 in ATWP 135). The crawl records them in `discussions.json` with an `error` and keeps the rest of the category.
+- Course details (`lp/courses/{ou}`) is 403 for students; `course.json` uses the enrollment record instead.
+- All file endpoints tested (content, news/post/dropbox attachments, submissions, overview attachment, course image) return 200 with the file directly, no redirects.
 - Discussion posts endpoint returned all posts without paging (71 in one topic); watch for paging on very large topics.
 - Quizzes list is paged (`Next`); enrollments are paged (`Bookmark`).
 
@@ -272,8 +280,8 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 ## 6. Output
 
 - Format: _TBD_ (plain folder tree / browsable offline `index.html` / both). The per-item HTML pages in 5.3 make an `index.html` cheap to add.
-- Output root location: _TBD_
-- Mode: _TBD_ (one-shot archive / re-runnable sync)
+- Output root location: `<repo>/D2L Archive/` by default (git-ignored as `/D2L Archive/`), asked in the download options. Other folders inside the repo are refused, since only that one is ignored
+- Mode: re-runnable; files already present are skipped (full sync of changed/removed items: later)
 - If sync: how to detect changed or removed items: _TBD_
 
 ---
@@ -306,6 +314,5 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 
 ## 10. Open Questions
 
-- Output root location: default outside the repo (e.g. `~/D2L Archive`) since archives contain classlist personal data
 - Session re-check interval and pause/re-login during downloads (section 2)
 - Rate limit and retry policy (section 3)

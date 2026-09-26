@@ -38,7 +38,7 @@ Status = Callable[[str], None]  # reports progress within a category, e.g. "file
 
 @dataclass
 class RemoteFile:
-    path: tuple[str, ...]  # folders within the category, e.g. ("Week 1", "Slides")
+    path: tuple[str, ...]  # folders within the category folder, e.g. ("01 Week 1", "02 Slides")
     name: str
     url: str  # API path to GET when downloading
     size: int | None  # None when the server doesn't report a size
@@ -83,6 +83,16 @@ def _paged(s: Session, path: str, params: dict | None = None) -> list:
     return objects
 
 
+def _optional(s: Session, path: str, default=None):
+    """GET JSON that students may not be allowed to see (403) or that may not exist (404)."""
+    try:
+        return s.get_json(path)
+    except ApiError as e:
+        if e.status in (403, 404):
+            return default
+        raise
+
+
 def _filename_from_headers(headers: dict[str, str], fallback: str) -> str:
     """Pull the filename out of a Content-Disposition header, preferring the RFC 5987 `filename*` form."""
     disposition = headers.get("content-disposition", "")
@@ -102,12 +112,7 @@ def _course_info(s: Session, course: Course, status: Status) -> CategoryResult:
     r = CategoryResult(unit="page", items=1)
     notes = []
 
-    try:
-        overview = s.get_json(f"/d2l/api/le/{{le}}/{ou}/overview")
-    except ApiError as e:
-        if e.status not in (403, 404):  # 404: the course has no overview
-            raise
-        overview = None
+    overview = _optional(s, f"/d2l/api/le/{{le}}/{ou}/overview")  # 404: the course has no overview
     r.data = {"enrollment": course.enrollment, "overview": overview}
 
     if overview:
@@ -135,22 +140,28 @@ def _content(s: Session, course: Course, status: Status) -> CategoryResult:
     r = CategoryResult(unit="topic", data=toc)
 
     def walk(modules, path):
-        for m in modules:
-            here = (*path, m["Title"])
+        # number module folders so they keep the instructor's order on disk
+        for i, m in enumerate(sorted(modules, key=lambda m: m["SortOrder"]), 1):
+            here = (*path, f"{i:02d} {m['Title']}")
             for t in m["Topics"]:
                 yield here, t
             yield from walk(m["Modules"], here)
 
     topics = list(walk(toc["Modules"], ()))
     r.items = len(topics)
-    file_topics = [(path, t) for path, t in topics if t["TypeIdentifier"] == "File"]
-    r.links = len(topics) - len(file_topics)
+    all_files = [(path, t) for path, t in topics if t["TypeIdentifier"] == "File"]
+    # a broken topic's file is missing on Brightspace itself (IsBroken, no Url); the download would 404
+    file_topics = [(path, t) for path, t in all_files if not t["IsBroken"] and t["Url"]]
+    broken = len(all_files) - len(file_topics)
+    r.links = len(topics) - len(all_files)
     r.note = plural(sum(1 for _ in _modules(toc["Modules"])), "module")
+    if broken:
+        r.note += f" · {plural(broken, 'broken file')}"
 
     for i, (path, t) in enumerate(file_topics, 1):
         status(f"file sizes {i}/{len(file_topics)}")
         url = f"/d2l/api/le/{le}/{ou}/content/topics/{t['TopicId']}/file"
-        name = PurePosixPath(unquote(t["Url"] or "")).name or t["Title"]
+        name = PurePosixPath(unquote(t["Url"])).name or t["Title"]
         r.files.append(RemoteFile(path, name, url, s.head_size(url)))
     return r
 
@@ -162,20 +173,39 @@ def _modules(modules):
 
 
 def _classlist(s: Session, course: Course, status: Status) -> CategoryResult:
-    people = s.get_json(f"/d2l/api/le/{{le}}/{course.id}/classlist/")
-    return CategoryResult(unit="person", items=len(people), data=people)
+    ou = course.id
+    people = s.get_json(f"/d2l/api/le/{{le}}/{ou}/classlist/")
+    groups = []
+    for category in _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/", []):
+        category_groups = _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/{category['GroupCategoryId']}/groups/", [])
+        groups.append({"category": category, "groups": category_groups})
+    r = CategoryResult(unit="person", items=len(people), data={"people": people, "groups": groups})
+    if groups:
+        r.note = plural(len(groups), "group category")
+    return r
 
 
 def _grades(s: Session, course: Course, status: Status) -> CategoryResult:
-    grades = s.get_json(f"/d2l/api/le/{{le}}/{course.id}/grades/values/myGradeValues/")
-    items = [g for g in grades if g["GradeObjectTypeName"] != "Category"]
-    return CategoryResult(unit="grade item", items=len(items), data=grades)
+    ou = course.id
+    values = s.get_json(f"/d2l/api/le/{{le}}/{ou}/grades/values/myGradeValues/")
+    data = {
+        "values": values,
+        "items": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/", []),  # max points, weights, categories
+        "categories": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/categories/", []),
+        "final": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/final/values/myGradeValue"),  # 404 until released
+    }
+    items = [g for g in values if g["GradeObjectTypeName"] != "Category"]
+    r = CategoryResult(unit="grade item", items=len(items), data=data)
+    if data["final"]:
+        r.note = "final grade released"
+    return r
 
 
 def _discussions(s: Session, course: Course, status: Status) -> CategoryResult:
     base = f"/d2l/api/le/{s.versions['le']}/{course.id}/discussions/forums"
     r = CategoryResult(unit="post", data=[])
     n_topics = 0
+    failed_topics = 0
 
     forums = s.get_json(f"{base}/")
     for forum in forums:
@@ -184,18 +214,27 @@ def _discussions(s: Session, course: Course, status: Status) -> CategoryResult:
         for topic in s.get_json(f"{base}/{fid}/topics/"):
             tid = topic["TopicId"]
             status(f"{forum['Name']} › {topic['Name']}")
-            posts = s.get_json(f"{base}/{fid}/topics/{tid}/posts/")
+            try:
+                posts = s.get_json(f"{base}/{fid}/topics/{tid}/posts/")
+            except ApiError as e:
+                # some topics fail server-side (HTTP 500) on every attempt; keep the rest of the forum
+                failed_topics += 1
+                topics.append({"topic": topic, "posts": [], "error": f"HTTP {e.status}"})
+                continue
             r.items += len(posts)
             for post in posts:
                 for a in post["Attachments"]:
                     url = f"{base}/{fid}/topics/{tid}/posts/{post['PostId']}/attachments/{a['FileId']}"
-                    r.files.append(RemoteFile((forum["Name"], topic["Name"]), a["FileName"], url, a["Size"]))
+                    path = (forum["Name"], topic["Name"], "attachments")
+                    r.files.append(RemoteFile(path, a["FileName"], url, a["Size"]))
             topics.append({"topic": topic, "posts": posts})
         n_topics += len(topics)
         r.data.append({"forum": forum, "topics": topics})
 
     if forums:
         r.note = f"{plural(len(forums), 'forum')} · {plural(n_topics, 'topic')}"
+    if failed_topics:
+        r.note += f" · {plural(failed_topics, 'topic')} failed"
     return r
 
 
@@ -211,20 +250,22 @@ def _assignments(s: Session, course: Course, status: Status) -> CategoryResult:
         status(name)
         r.links += len(folder["LinkAttachments"])
         for a in folder["Attachments"]:
-            r.files.append(RemoteFile((name,), a["FileName"], f"{base}/{fid}/attachments/{a['FileId']}", a["Size"]))
+            url = f"{base}/{fid}/attachments/{a['FileId']}"
+            r.files.append(RemoteFile((name, "attachments"), a["FileName"], url, a["Size"]))
 
         mine = s.get_json(f"{base}/{fid}/submissions/mysubmissions/")
         for entity in mine:
             for sub in entity["Submissions"]:
                 n_submissions += 1
+                day = (sub.get("SubmissionDate") or "undated")[:10]
                 for f in sub["Files"]:
                     url = f"{base}/{fid}/submissions/{sub['Id']}/files/{f['FileId']}"
-                    r.files.append(RemoteFile((name, "My submissions"), f["FileName"], url, f["Size"]))
+                    r.files.append(RemoteFile((name, "submissions", day), f["FileName"], url, f["Size"]))
             feedback = entity.get("Feedback") or {}
             for f in feedback.get("Files", []):
                 e = entity["Entity"]
                 url = f"{base}/{fid}/feedback/{e['EntityType'].lower()}/{e['EntityId']}/attachments/{f['FileId']}"
-                r.files.append(RemoteFile((name, "Feedback"), f["FileName"], url, f["Size"]))
+                r.files.append(RemoteFile((name, "feedback"), f["FileName"], url, f["Size"]))
         r.data.append({"folder": folder, "mysubmissions": mine})
 
     if n_submissions:
@@ -244,7 +285,7 @@ def _announcements(s: Session, course: Course, status: Status) -> CategoryResult
     for item in news:
         for a in item["Attachments"]:
             url = f"/d2l/api/le/{le}/{ou}/news/{item['Id']}/attachments/{a['FileId']}"
-            r.files.append(RemoteFile((), a["FileName"], url, a["Size"]))
+            r.files.append(RemoteFile(("attachments",), a["FileName"], url, a["Size"]))
     return r
 
 

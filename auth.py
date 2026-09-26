@@ -2,18 +2,24 @@
 
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import keyring
 from cryptography.fernet import Fernet, InvalidToken
-from playwright.sync_api import sync_playwright, APIRequestContext, Playwright
+from playwright.sync_api import sync_playwright, APIRequestContext, APIResponse, Playwright
+from playwright.sync_api import Error as PlaywrightError
 
 from ui import console, ok, warn
 
 BASE_URL = "https://bright.uvic.ca"
-STATE_FILE = Path(".auth/state.enc")
+STATE_FILE = Path(__file__).parent / ".auth" / "state.enc"
 LOGIN_TIMEOUT_MS = 5 * 60 * 1000  # time allowed for the user to finish SSO + MFA
+FILE_TIMEOUT_MS = 10 * 60 * 1000  # per file download; videos can be hundreds of MB
+
+RETRIES = 3
+RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 KEYRING_SERVICE = "d2l-scraper"
 KEYRING_USER = "session-key"
@@ -74,15 +80,51 @@ class Session:
     versions: dict[str, str]  # product code -> latest API version, e.g. {"lp": "1.63"}
     user: dict
 
+    def _get(self, path: str, params: dict | None = None, timeout: float | None = None) -> APIResponse:
+        """GET with retries on network errors, 429, and 5xx (waits 1s, 2s, 4s between attempts)."""
+        for attempt in range(RETRIES + 1):
+            try:
+                # max_redirects=0: an expired session redirects to the login page instead of failing
+                resp = self.api.get(path, params=params, max_redirects=0, timeout=timeout)
+            except PlaywrightError:
+                if attempt == RETRIES:
+                    raise
+            else:
+                if resp.status not in RETRY_STATUSES or attempt == RETRIES:
+                    return resp
+            time.sleep(2 ** attempt)
+
     def get_json(self, path: str, params: dict | None = None):
         """GET a Valence endpoint and return its JSON. `{lp}` etc. in `path` are filled from versions."""
-        # max_redirects=0: an expired session redirects to the login page instead of failing
-        resp = self.api.get(path.format(**self.versions), params=params, max_redirects=0)
+        resp = self._get(path.format(**self.versions), params)
         if resp.ok and "application/json" in resp.headers.get("content-type", ""):
             return resp.json()
         if resp.status in (301, 302, 401) or resp.ok:
             raise SessionExpired(f"GET {path}: HTTP {resp.status}")
         raise ApiError(path, resp.status)
+
+    def fetch(self, path: str) -> bytes:
+        """Download a file's bytes. Raises SessionExpired on a login redirect, ApiError on other failures."""
+        resp = self._get(path, timeout=FILE_TIMEOUT_MS)
+        if resp.status in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location", "")
+            if "login" in location.lower():
+                raise SessionExpired(f"GET {path}: redirected to login")
+            resp = self._get(location, timeout=FILE_TIMEOUT_MS)  # one hop, e.g. to a file server
+        if resp.status == 401:
+            raise SessionExpired(f"GET {path}: HTTP 401")
+        if not resp.ok:
+            raise ApiError(path, resp.status)
+        return resp.body()
+
+    def is_valid(self) -> bool:
+        """Whether the session is still logged in. An expired session gets 403 on every API call,
+        so this is how a 403 is told apart from content that is genuinely hidden."""
+        try:
+            self.get_json("/d2l/api/lp/{lp}/users/whoami")
+            return True
+        except (SessionExpired, ApiError):
+            return False
 
     def head(self, path: str) -> tuple[bool, int | None, dict[str, str]]:
         """HEAD a file: (exists, size or None if not reported, response headers)."""
@@ -136,6 +178,17 @@ def connect(p: Playwright) -> Session:
     user = session.user
     ok(f"Logged in as [bold]{user['FirstName']} {user['LastName']}[/] [dim]({user['UniqueName']})[/]")
     return session
+
+
+def relogin(p: Playwright, session: Session) -> None:
+    """Log in again in the browser and swap the fresh cookies into the existing session in place."""
+    login(p)
+    fresh = p.request.new_context(base_url=BASE_URL, storage_state=load_state())
+    session.api.dispose()
+    session.api = fresh
+    if not session.is_valid():
+        raise SessionExpired("Login finished but the session could not be verified.")
+    ok("Logged in again, resuming")
 
 
 def main() -> None:

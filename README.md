@@ -2,7 +2,7 @@
 
 A command-line tool for archiving your own course data from a D2L Brightspace instance. You log in through a normal browser window, pick the courses and kinds of content you want, review exactly what will be downloaded, and the tool fetches it through D2L's read-only Valence API.
 
-> **Status: work in progress.** Login, course and category selection, the deep crawl, the review screen, and download options all work. The download step itself is not implemented yet.
+> **Status: work in progress.** The full flow works end to end: every file is downloaded, raw JSON is saved, and grades, classlist, and calendar are exported to CSV and `.ics`. Still to come: readable HTML pages for announcements, assignments, discussions, and the rest, self-contained content pages, and Markdown copies.
 
 Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`). Support for other D2L instances is planned.
 
@@ -68,7 +68,10 @@ python main.py
    └────────────── ←/→ switch course · enter continue · esc cancel ──────────────┘
    ```
 
-5. **Choose download options.** Whether to include videos (off by default; skipped if there are none), and which generated pages should also get a Markdown copy.
+5. **Choose download options.** Whether to include videos (off by default; skipped if there are none), which generated pages should also get a Markdown copy, and where to save the archive (default: the git-ignored `D2L Archive/` folder in this repository; other folders inside the repository are refused, since they could get committed).
+6. **Download.** A progress bar shows bytes and time remaining, then a summary of what was downloaded, skipped, and failed.
+
+Running it again with the same selection only fetches what's missing: files already in the archive with the right size are skipped, so an interrupted download resumes where it stopped. If your Brightspace session expires mid-download, the tool pauses, opens the browser for you to log in again, and carries on.
 
 Other entry points, useful while developing:
 
@@ -81,16 +84,21 @@ Other entry points, useful while developing:
 
 Delete `.auth/state.enc`. To also remove the encryption key, delete the `d2l-scraper` entry from your OS keychain (on Windows: Credential Manager → Windows Credentials).
 
-## What gets archived (planned output)
+## What gets archived
 
-The download step is being built to this plan (details in [`d2l-scraper-requirements.md`](d2l-scraper-requirements.md), section 5):
+Details in [`d2l-scraper-requirements.md`](d2l-scraper-requirements.md), section 5.
 
-- **Files stay in their original format.** PDFs, slides, documents, code, images, and (if opted in) videos are saved byte-for-byte under their original names.
-- **Text becomes self-contained HTML.** Announcements, assignment instructions and feedback, discussion threads, content pages, quizzes, grades, and course info are saved as HTML pages with their images and styles embedded, so each page works offline as a single file. Optional Markdown copies sit next to them.
-- **Tables also become CSV.** Grades and the classlist are saved as spreadsheets.
-- **Calendar becomes `.ics`**, importable into any calendar app.
-- **Links are recorded, not followed.** External links, embedded video players (YuJa/Kaltura), and other tools go into a `links.html` per course, plus `.url` shortcuts.
+Working now:
+
+- **Files stay in their original format.** PDFs, slides, documents, code, images, and (if opted in) videos are saved byte-for-byte under their original names: content files in numbered module folders, assignment attachments, your submissions (by date), feedback files, announcement and discussion attachments, the syllabus attachment, and the course banner.
 - **Raw API JSON is always kept**, one file per category, so pages can be regenerated and future runs can sync.
+- **Grades and classlist become CSV** (opens in Excel), grades joined to their categories with instructor comments.
+- **Calendar becomes `.ics`**, importable into any calendar app.
+
+Coming next:
+
+- **Text becomes self-contained HTML.** Announcements, assignment instructions and feedback, discussion threads, content pages, quizzes, grades, and course info as HTML pages with their images and styles embedded, so each page works offline as a single file. Optional Markdown copies next to them.
+- **Links are recorded, not followed.** External links, embedded video players (YuJa/Kaltura), and other tools go into a `links.html` per course, plus `.url` shortcuts.
 
 ```
 <output root>/
@@ -106,24 +114,27 @@ The download step is being built to this plan (details in [`d2l-scraper-requirem
     calendar/        calendar.ics  calendar.json
 ```
 
-Quiz questions and attempts can't be archived: the API refuses them to students, so only quiz details are saved.
+Quiz questions and attempts can't be archived: the API refuses them to students, so only quiz details are saved. Content topics whose file is missing on Brightspace itself ("broken" topics) are listed in the review and skipped.
 
 ## How it works
 
 - **Authentication**: [Playwright](https://playwright.dev/python/) opens a visible browser for you to log in. The resulting cookies are saved with `storage_state`, encrypted with [Fernet](https://cryptography.io/en/latest/fernet/), and written to `.auth/state.enc`. The key is generated on first run and stored in the OS keychain, so the file is useless if copied to another machine.
 - **Session check**: before each run the tool calls `/d2l/api/lp/{version}/users/whoami`. If the session is missing, unreadable, or rejected, it opens the browser to log in again.
 - **API access**: API versions are discovered at startup from `/d2l/api/versions/`. Courses come from `/d2l/api/lp/{version}/enrollments/myenrollments/`.
-- **Deep crawl**: for each course and category the tool walks the relevant endpoints (content table of contents, dropbox folders and your submissions, forum topics and posts, news, grades, quizzes, calendar). File sizes come from the API where it reports them, and from a `HEAD` request for content files. The crawl keeps every file's download URL and the raw JSON, so the download step won't need to crawl again.
+- **Deep crawl**: for each course and category the tool walks the relevant endpoints (content table of contents, dropbox folders and your submissions, forum topics and posts, news, grades, quizzes, calendar). File sizes come from the API where it reports them, and from a `HEAD` request for content files. The crawl keeps every file's download URL and the raw JSON, so the download step doesn't crawl again.
+- **Download**: requests run one at a time and are retried up to 3 times on network errors, 429, and 5xx. Each file is written to a `.part` file first and renamed when complete. Names are made safe for Windows, macOS, and Linux, duplicates get ` (2)`, and paths are kept under Windows' 260-character limit where possible. An expired session answers with the same 403 as hidden content, so on a 403 the tool checks `whoami` to tell the two apart before asking you to log in again.
 
 ## Project layout
 
 ```
-main.py        Entry point: login → select → crawl → review → download options
-auth.py        Browser login, encrypted session storage, API session wrapper
+main.py        Entry point: login → select → crawl → review → options → download
+auth.py        Browser login, encrypted session, API session (retries, file fetch, re-login)
 courses.py     Fetch and group course enrollments
 crawl.py       Deep crawl of each course/category: counts, files, sizes, raw JSON
 review.py      Review screen: counts and sizes per course, ←/→ to switch
-prompts.py     Interactive prompts: courses, categories, download options
+prompts.py     Interactive prompts: courses, categories, download options, output folder
+download.py    Output paths, raw JSON, file downloads with skip-if-present and re-login
+exports.py     grades.csv, classlist.csv, calendar.ics
 ui.py          Shared terminal styling and helpers
 d2l-scraper-requirements.md   Design notes, content inventory, and decisions
 ```
@@ -134,19 +145,22 @@ d2l-scraper-requirements.md   Design notes, content inventory, and decisions
 - [x] Course and category selection
 - [x] Deep crawl with per-course counts and sizes, reviewed before downloading
 - [x] Download options: videos opt-in, Markdown copies
-- [ ] Download files and generate HTML pages, CSV, and `.ics`
-- [ ] Embed images and styles into HTML pages; record link-only items
-- [ ] Markdown conversion of generated pages
+- [x] Download every file, raw JSON, grades/classlist CSV, calendar `.ics`
+- [x] Pause and re-login if the session expires mid-download
+- [x] Re-runs skip files already downloaded
+- [ ] Generated HTML pages: announcements, assignments, discussions, quizzes, grades, course info
+- [ ] Self-contained content HTML pages; record link-only items (`links.html`, `.url`)
 - [ ] Count videos linked from inside HTML pages
-- [ ] Pause and re-login if the session expires mid-download
-- [ ] Re-runnable sync (skip already-downloaded files)
+- [ ] Markdown conversion of generated pages
+- [ ] End-of-run log file
+- [ ] Full sync (detect changed and removed items)
 - [ ] Support for other D2L instances
 
 ## Security and privacy
 
 - `.auth/` is git-ignored. Never commit it or share it: while the session is valid, the saved state grants access to your Brightspace account.
 - Encryption protects the session file if it is copied off your machine (backups, cloud sync, accidental sharing). It does not protect against software running as your own user account.
-- Archives can contain other people's personal data (the classlist includes names and emails). Keep the output folder outside this repository and don't share archives publicly.
+- Archives can contain other people's personal data (the classlist includes names and emails). The default `D2L Archive/` folder is git-ignored, so it isn't committed, but it is included if you zip, copy, or cloud-sync the project folder. Don't share archives publicly.
 
 ## Disclaimer
 

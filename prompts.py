@@ -1,6 +1,7 @@
 """Interactive terminal prompts for choosing what to archive."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import questionary
 
@@ -22,10 +23,27 @@ MARKDOWN_KINDS = {
 }
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT = PROJECT_DIR / "D2L Archive"  # git-ignored (.gitignore); archives hold classmates' personal data
+
+
 @dataclass
 class DownloadOptions:
     videos: bool
     markdown: list[str]  # keys of MARKDOWN_KINDS to also save as .md
+    output: Path = DEFAULT_OUTPUT
+
+
+def _check_output(text: str) -> bool | str:
+    path = Path(text).expanduser().resolve()
+    in_repo = path == PROJECT_DIR or PROJECT_DIR in path.parents
+    in_ignored = path == DEFAULT_OUTPUT or DEFAULT_OUTPUT in path.parents
+    if in_repo and not in_ignored:
+        # only the default archive folder is git-ignored; anywhere else in the repo could get committed
+        return f"Inside this repository, only '{DEFAULT_OUTPUT.name}' is git-ignored. Use it or a folder outside the repo"
+    if path.exists() and not path.is_dir():
+        return "That's a file, not a folder"
+    return True
 
 
 def select_categories() -> list[str] | None:
@@ -41,7 +59,7 @@ def select_categories() -> list[str] | None:
 
 
 def select_download_options(crawls: list[CourseCrawl]) -> DownloadOptions | None:
-    """Ask whether to download videos and which generated pages to also save as Markdown.
+    """Ask whether to download videos, which generated pages to also save as Markdown, and where to save.
 
     The video question is skipped when the crawl found no videos. Returns None if the user cancels.
     """
@@ -66,7 +84,17 @@ def select_download_options(crawls: list[CourseCrawl]) -> DownloadOptions | None
     ).ask)
     if markdown is None:
         return None
-    return DownloadOptions(videos=include_videos, markdown=markdown)
+
+    output = in_thread(questionary.path(
+        "Save the archive to:",
+        default=str(DEFAULT_OUTPUT),
+        only_directories=True,
+        validate=_check_output,
+        style=PROMPT_STYLE,
+    ).ask)
+    if output is None:
+        return None
+    return DownloadOptions(videos=include_videos, markdown=markdown, output=Path(output).expanduser().resolve())
 
 
 def select_courses(courses: list[Course]) -> list[Course] | None:

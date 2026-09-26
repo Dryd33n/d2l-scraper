@@ -1,3 +1,7 @@
 .venv/
 .auth/
 __pycache__/
+
+# Archive output (the default output folder). It contains classmates' personal data from classlists.
+/D2L Archive/
+*.part

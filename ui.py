@@ -25,7 +25,7 @@ PROMPT_STYLE = questionary.Style([
 ])
 
 
-IRREGULAR_PLURALS = {"person": "people", "quiz": "quizzes"}
+IRREGULAR_PLURALS = {"person": "people", "quiz": "quizzes", "group category": "group categories"}
 
 
 def plural(n: int, noun: str) -> str:
