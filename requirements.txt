@@ -1,0 +1,5 @@
+playwright
+keyring
+cryptography
+questionary
+rich
