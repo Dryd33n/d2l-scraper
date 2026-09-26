@@ -1,14 +1,16 @@
-"""Generated HTML pages: readable views of the crawled JSON for course info, announcements,
-assignments, discussions, quizzes, and grades.
+"""Generated HTML pages: readable views of the crawled JSON (course info, announcements, assignments,
+discussions, quizzes, grades, the content outline and its links), plus the HTML content pages
+themselves made self-contained.
 
-Each page is a single file with the shared style inlined. Rich text from Brightspace is kept as HTML;
-its site-relative links and images point back at Brightspace until phase 3 downloads them.
+Generated pages are single files with the shared style inlined. Rich text from Brightspace is kept as
+HTML and goes through `embed.rewrite_html` like the content pages, so its images are embedded and its
+links point at the archive.
 """
 
 import html
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -16,20 +18,64 @@ from typing import Callable
 from urllib.parse import quote
 
 from auth import BASE_URL
-from crawl import COURSE_INFO, LABELS, CategoryResult, CourseCrawl
+from crawl import COURSE_INFO, LABELS, CategoryResult, CourseCrawl, HtmlPage, walk_toc
+from embed import absolute, brightspace_link, canonical, decode, is_lti, rewrite_html, view_attachment
 from ui import format_size
 
 esc = html.escape
 
 
 @dataclass
+class Targets:
+    """Where Brightspace items live in the archive, as "<page key>#<anchor>" (see Page.key)."""
+    activities: dict[str, str] = field(default_factory=dict)  # quickLink rcode -> target
+    threads: dict[str, str] = field(default_factory=dict)  # discussion thread id -> target
+    post_files: dict[tuple[int, int], str] = field(default_factory=dict)  # (post id, file id) -> attachment's API tail
+
+
+def targets(crawl: CourseCrawl) -> Targets:
+    t = Targets()
+
+    def ok(key):
+        r = crawl.results.get(key)
+        return r.data if r is not None and r.error is None else None
+
+    def rcode(activity_id):
+        return (activity_id or "").rsplit("/", 1)[-1].lower()
+
+    for e in ok("assignments") or []:
+        t.activities[rcode(e["folder"].get("ActivityId"))] = f"dropbox/folders/{e['folder']['Id']}"
+    for q in ok("quizzes") or []:
+        t.activities[rcode(q.get("ActivityId"))] = f"quizzes#quiz-{q['QuizId']}"
+    for f in ok("discussions") or []:
+        fid = f["forum"]["ForumId"]
+        for entry in f["topics"]:
+            tid = entry["topic"]["TopicId"]
+            t.activities[rcode(entry["topic"].get("ActivityId"))] = f"discussions/topics/{tid}"
+            for p in entry["posts"]:
+                if not p.get("ParentPostId"):
+                    t.threads.setdefault(str(p["ThreadId"]), f"discussions/topics/{tid}#post-{p['PostId']}")
+                for a in p["Attachments"]:
+                    t.post_files[(p["PostId"], a["FileId"])] = f"discussions/forums/{fid}/topics/{tid}/posts/{p['PostId']}/attachments/{a['FileId']}"
+    if toc := ok("content"):
+        for _, m in walk_toc(toc["Modules"]):
+            for topic in m["Topics"]:
+                # tool shortcuts share the tool's ActivityId; the tool's own page wins
+                t.activities.setdefault(rcode(topic.get("ActivityId")), f"content/topics/{topic['TopicId']}")
+    t.activities.pop("", None)
+    return t
+
+
+@dataclass
 class Context:
-    """What a page needs while rendering: where it's written and where the downloaded files went."""
+    """What a page needs while rendering: where it's written and where everything else in the archive went."""
     crawl: CourseCrawl
     dest: Path
     course_page: Path | None
     files: dict[str, Path]  # API path after the course id -> local file, e.g. "news/12/attachments/34"
     people: dict[str, str]  # user id -> display name, from the classlist when it was crawled
+    pages: dict[str, Path] = field(default_factory=dict)  # Page.key -> where that page was written
+    targets: Targets = field(default_factory=Targets)
 
     def href(self, target: Path) -> str:
         return quote(os.path.relpath(target, self.dest.parent).replace(os.sep, "/"))
@@ -45,14 +91,55 @@ class Context:
             return f'{label}{extra} <span class="muted">(not downloaded)</span>'
         return f'<a href="{self.href(path)}">{label}</a>{extra}'
 
+    # embed.Links
+    def local(self, url: str) -> Path | None:
+        key = canonical(url)
+        if key is None:
+            return None
+        path = self.files.get(api_tail(key, self.crawl.course.id))
+        if path is None and (post_image := view_attachment(key)):
+            tail = self.targets.post_files.get(post_image[1:])
+            path = self.files.get(tail) if tail else None
+        return path if path is not None and path.exists() else None
+
+    def internal(self, url: str) -> str | None:
+        link = brightspace_link(url)
+        if link is None or is_lti(url):  # external tools only work inside Brightspace
+            return None
+        kind, ident = link
+        target = {
+            "rcode": lambda: self.targets.activities.get(ident),
+            "content": lambda: f"content/topics/{ident}",
+            "topic": lambda: f"discussions/topics/{ident}",
+            "thread": lambda: self.targets.threads.get(ident),
+            "dropbox": lambda: f"dropbox/folders/{ident}",
+            "quiz": lambda: f"quizzes#quiz-{ident}",
+        }[kind]()
+        return self.place(target) if target else None
+
+    def place(self, target: str) -> str | None:
+        """An href for a "<page key>#<anchor>" target, or None when it isn't in the archive.
+        A content topic goes to its page or file, falling back to its entry in the content outline."""
+        key, _, anchor = target.partition("#")
+        path = self.pages.get(key)  # pages are all written this run, so they needn't exist yet
+        if path is None and key.startswith("content/topics/"):
+            path = self.files.get(f"{key}/file")
+            if path is None or not path.exists():
+                path, anchor = self.pages.get("content"), f"topic-{key.rsplit('/', 1)[1]}"
+        if path is None:
+            return None
+        return (self.href(path) if path != self.dest else "") + (f"#{anchor}" if anchor else "")
+
 
 @dataclass
 class Page:
     path: tuple[str, ...]  # folders within the category folder, like RemoteFile.path
     name: str
     title: str
-    render: Callable[[Context], str]  # returns the page body
+    render: Callable[[Context], str]  # returns the page body, or the whole file when standalone
     crumbs: tuple[str, ...] = ()  # shown between the course name and the title, e.g. ("Discussions", forum)
+    key: str | None = None  # what other pages link to, e.g. "dropbox/folders/12", "quizzes"
+    standalone: bool = False  # render returns the finished file (content pages, shortcuts)
 
 
 def api_tail(url: str, course_id: int) -> str:
@@ -142,12 +229,18 @@ article > header h2, article > header h3 { margin: 0; border: 0; padding: 0; }
 .body { overflow-wrap: anywhere; }
 .body > :first-child { margin-top: 0; }
 .body > :last-child { margin-bottom: 0; }
+.body h1, .body h2, .body h3, .body h4 { font-size: 1.05rem; margin: 1rem 0 .4rem; padding: 0; border: 0; }
+section > .body { border-left: 3px solid var(--line); padding-left: .75rem; margin-bottom: .75rem; }
 .replies { border-left: 3px solid var(--line); margin: .75rem 0 0 .25rem; padding-left: .75rem; }
 .replies article { border: 0; border-radius: 0; padding: .25rem 0; margin: .75rem 0; }
 .tag { display: inline-block; font-size: .75rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 1rem;
   color: var(--muted); vertical-align: middle; }
 .note { background: var(--warn); border-radius: 6px; padding: .5rem .75rem; }
 ul.files { padding-left: 1.25rem; }
+ul.topics { padding-left: 1.25rem; }
+ul.topics li { margin: .4rem 0; }
+ul.topics .body { color: var(--muted); font-size: .92rem; }
+td.url { overflow-wrap: anywhere; font-size: .85rem; }
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .95rem; margin: .5rem 0 1rem; }
 th, td { border: 1px solid var(--line); padding: .4rem .6rem; text-align: left; vertical-align: top; }
@@ -487,28 +580,189 @@ def _grades(data: dict, ctx: Context) -> str:
     )
 
 
+# ---------- content ----------
+
+ACTIVITY_KINDS = {2: "Web link", 3: "Assignment", 4: "Quiz", 5: "Discussion forum", 6: "Discussion topic",
+                  7: "External tool", 10: "Checklist", 12: "Survey"}
+TOOL_SHORTCUTS = {3, 4, 5, 6}  # links to another Brightspace tool, archived in that tool's category
+
+
+def _topic_url(topic: dict) -> str | None:
+    return absolute(topic.get("Url") or "", BASE_URL + "/")
+
+
+def _local_topic(topic_id: int, ctx: Context) -> str | None:
+    """Href to a file topic's archived page or file, if it's in the archive."""
+    key = f"content/topics/{topic_id}"
+    if key in ctx.pages:
+        return ctx.href(ctx.pages[key])
+    path = ctx.files.get(f"{key}/file")
+    return ctx.href(path) if path is not None and path.exists() else None
+
+
+def _link_target(topic: dict, ctx: Context) -> tuple[str | None, str]:
+    """(href, note) for a link topic: the archived copy of what it links to, else its web address."""
+    url = _topic_url(topic)
+    if url is None:
+        return None, "no address"
+    if local := ctx.internal(url):
+        return local, ""
+    return url, "only works inside Brightspace" if is_lti(url) else ""
+
+
+def _topic_item(topic: dict, ctx: Context) -> str:
+    title = esc(topic.get("Title") or "Untitled")
+    notes = []
+    kind = ""
+    if topic["TypeIdentifier"] == "File":
+        href = _local_topic(topic["TopicId"], ctx)
+        if topic.get("IsBroken"):
+            notes.append("missing on Brightspace")
+        elif href is None:
+            notes.append("not downloaded")
+    else:
+        href, note = _link_target(topic, ctx)
+        notes += [note] if note else []
+        kind = f' <span class="tag">{esc(ACTIVITY_KINDS.get(topic.get("ActivityType"), "Link"))}</span>'
+    link = f'<a href="{esc(href)}">{title}</a>' if href else title
+    meta = [m for m in [
+        f"due {when(topic['DueDate'])}" if topic.get("DueDate") else "",
+        f"from {when(topic['StartDateTime'])}" if topic.get("StartDateTime") else "",
+        f"until {when(topic['EndDateTime'])}" if topic.get("EndDateTime") else "",
+        *notes,
+    ] if m]
+    out = f'<li id="topic-{topic["TopicId"]}">{link}{kind}'
+    if meta:
+        out += f' <span class="muted">{" · ".join(meta)}</span>'
+    if _has_text(topic.get("Description")):
+        out += f'<div class="body">{rich(topic["Description"])}</div>'
+    return out + "</li>"
+
+
+def _module(module: dict, depth: int, ctx: Context) -> str:
+    level = min(depth + 2, 4)
+    out = f'<section id="module-{module["ModuleId"]}"><h{level}>{esc(module.get("Title") or "Untitled")}</h{level}>\n'
+    out += details([("Opens", when(module.get("StartDateTime"))), ("Closes", when(module.get("EndDateTime")))])
+    if _has_text(module.get("Description")):
+        out += f'<div class="body">{rich(module["Description"])}</div>\n'
+    # topics and submodules share one ordering in Brightspace
+    children = sorted([*((t["SortOrder"], 0, t) for t in module["Topics"]), *((m["SortOrder"], 1, m) for m in module["Modules"])],
+                      key=lambda x: x[:2])
+    for is_module, group in _runs(children):
+        if is_module:
+            out += "".join(_module(c, depth + 1, ctx) for c in group)
+        else:
+            out += f'<ul class="topics">{"".join(_topic_item(c, ctx) for c in group)}</ul>\n'
+    return out + "</section>\n"
+
+
+def _runs(children):
+    """Group consecutive (sort, is_module, item) entries into (is_module, [items]) runs, keeping order."""
+    runs = []
+    for _, is_module, item in children:
+        if runs and runs[-1][0] == is_module:
+            runs[-1][1].append(item)
+        else:
+            runs.append((is_module, [item]))
+    return runs
+
+
+def _outline(toc: dict, ctx: Context) -> str:
+    """Every module and topic in the instructor's order, with descriptions, linking to the archived copies."""
+    out = ""
+    if "links" in ctx.pages:
+        out += (f'<p class="muted">Every web link and Brightspace tool link in this course is also listed in '
+                f'<a href="{ctx.href(ctx.pages["links"])}">Links</a>.</p>\n')
+    modules = sorted(toc["Modules"], key=lambda m: m["SortOrder"])
+    return out + ("".join(_module(m, 0, ctx) for m in modules) or '<p class="muted">No content.</p>')
+
+
+def _links(toc: dict, ctx: Context) -> str:
+    """Every link-only topic (web links, Brightspace tool links, external tools), grouped by module."""
+    out = ""
+    for path, module in walk_toc(toc["Modules"]):
+        rows = []
+        for t in module["Topics"]:
+            if t["TypeIdentifier"] == "File":
+                continue
+            href, note = _link_target(t, ctx)
+            title = esc(t.get("Title") or "Untitled")
+            link = f'<a href="{esc(href)}">{title}</a>' if href else title
+            if note:
+                link += f' <span class="muted">({esc(note)})</span>'
+            url = esc(_topic_url(t) or "")
+            kind = esc(ACTIVITY_KINDS.get(t.get("ActivityType"), "Link"))
+            rows.append(f'<tr id="topic-{t["TopicId"]}"><td>{link}</td><td>{kind}</td><td class="url"><a href="{url}">{url}</a></td></tr>')
+        if rows:
+            heading = " › ".join(esc(part[3:]) for part in path)  # folder names without their "01 " prefix
+            out += (f"<h2>{heading}</h2>\n"
+                    '<div class="table-wrap"><table><thead><tr><th>Title</th><th>Kind</th><th>Address</th></tr></thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></div>\n')
+    return out or '<p class="muted">No links.</p>'
+
+
+def _html_topic(page: HtmlPage, ctx: Context) -> str:
+    return rewrite_html(decode(page.html), page.base, ctx)
+
+
+def _redirect(url: str, title: str, ctx: Context) -> str:
+    """A tiny page that opens the archived copy of a Brightspace item (or Brightspace itself)."""
+    href = esc(ctx.internal(url) or url)
+    return (f'<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url={href}">\n'
+            f'<title>{esc(title)}</title>\n<p><a href="{href}">{esc(title)}</a></p>\n')
+
+
+def _url_shortcut(url: str, ctx: Context) -> str:
+    return f"[InternetShortcut]\r\nURL={url}\r\n"
+
+
+def _content_pages(toc: dict, result: CategoryResult) -> list[Page]:
+    label = LABELS["content"]
+    pages = [Page(p.path, p.name, p.name, partial(_html_topic, p), key=f"content/topics/{p.topic_id}", standalone=True)
+             for p in result.html_pages]
+    pages.append(Page((), "content.html", label, partial(_outline, toc), key="content"))
+    pages.append(Page((), "links.html", "Links", partial(_links, toc), (label,), key="links"))
+    # a shortcut next to the files for every link topic: .url for web addresses (opens natively on
+    # Windows), a redirect page for Brightspace items so it opens the archived copy
+    for path, module in walk_toc(toc["Modules"]):
+        for t in module["Topics"]:
+            url = _topic_url(t) if t["TypeIdentifier"] != "File" else None
+            if url is None:
+                continue
+            title = t.get("Title") or "Untitled"
+            if t.get("ActivityType") in TOOL_SHORTCUTS or brightspace_link(url) and not is_lti(url):
+                pages.append(Page(path, f"{title}.html", title, partial(_redirect, url, title), standalone=True))
+            else:
+                pages.append(Page(path, f"{title}.url", title, partial(_url_shortcut, url), standalone=True))
+    return pages
+
+
 # ---------- which pages each category gets ----------
 
 def pages_for(key: str, result: CategoryResult) -> list[Page]:
-    """The generated pages for one crawled category (none for categories without readable pages yet)."""
+    """The generated pages for one crawled category (none for categories without readable pages)."""
     if result.error is not None:
         return []
     data = result.data
     label = LABELS[key]
     if key == COURSE_INFO:
-        return [Page((), "course.html", "Course info", partial(_course, data))]
+        return [Page((), "course.html", "Course info", partial(_course, data), key="course")]
+    if key == "content":
+        return _content_pages(data, result)
     if key == "announcements":
-        return [Page((), "announcements.html", label, partial(_announcements, data))]
+        return [Page((), "announcements.html", label, partial(_announcements, data), key="announcements")]
     if key == "quizzes":
-        return [Page((), "quizzes.html", label, partial(_quizzes, data))]
+        return [Page((), "quizzes.html", label, partial(_quizzes, data), key="quizzes")]
     if key == "grades":
-        return [Page((), "grades.html", label, partial(_grades, data))]
+        return [Page((), "grades.html", label, partial(_grades, data), key="grades")]
     if key == "assignments":
-        return [Page((e["folder"]["Name"],), "assignment.html", e["folder"]["Name"], partial(_assignment, e), (label,))
+        return [Page((e["folder"]["Name"],), "assignment.html", e["folder"]["Name"], partial(_assignment, e), (label,),
+                     key=f"dropbox/folders/{e['folder']['Id']}")
                 for e in data]
     if key == "discussions":
         return [Page((f["forum"]["Name"],), f"{t['topic']['Name']}.html", t["topic"]["Name"],
-                     partial(_topic, f["forum"], t), (label, f["forum"]["Name"]))
+                     partial(_topic, f["forum"], t), (label, f["forum"]["Name"]),
+                     key=f"discussions/topics/{t['topic']['TopicId']}")
                 for f in data for t in f["topics"]]
     return []
 

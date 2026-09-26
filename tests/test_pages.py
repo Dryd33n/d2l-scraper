@@ -174,3 +174,46 @@ bad = CourseCrawl(course, {"announcements": CategoryResult(data=[{"Id": 1, "Atta
 _, jobs, page_jobs = plan(tmp / "bad", [bad])
 written, failed = write_pages(page_jobs, jobs)
 check("broken record recorded as failure, not raised", (written, len(failed)), (0, 1))
+
+# ---------- content: outline, links, shortcuts, quickLinks ----------
+
+from crawl import HtmlPage
+QL = "/d2l/common/dialogs/quickLink/quickLink.d2l?ou=1234&type="
+def topic(tid, title, kind="File", activity=1, url=None, sort=0, **kw):
+    return {"TopicId": tid, "Title": title, "TypeIdentifier": kind, "ActivityType": activity, "Url": url, "SortOrder": sort,
+            "IsBroken": False, "ActivityId": f"https://ids.brightspace.com/activities/x/ABC-{tid}", "Description": rt(""), **kw}
+toc = {"Modules": [{"ModuleId": 1, "Title": "Week 1", "SortOrder": 1, "Description": rt("<p>Read <a href='/d2l/le/content/1234/viewContent/11/View'>the slides</a></p>"),
+                    "Modules": [], "Topics": [
+    topic(11, "Slides", url="/content/enforced/x/slides.pdf", sort=1),
+    topic(12, "Page", url="/content/enforced/x/page.html", sort=2),
+    topic(13, "Textbook", "Link", 2, "https://example.com/book", sort=3),
+    topic(14, "Quiz 1", "Link", 4, QL + "quiz&rCode=QZ-7", sort=4),
+    topic(15, "Recordings", "Link", 7, QL + "lti&rcode=LTI-1", sort=5),
+    topic(16, "Old notes", sort=6, IsBroken=True),
+]}]}
+page_html = b'<html><body><a href="/d2l/common/dialogs/quickLink/quickLink.d2l?ou=1234&amp;type=quiz&amp;rcode=qz-7">quiz</a></body></html>'
+crawl = CourseCrawl(course, {
+    "content": CategoryResult(data=toc, files=[RemoteFile(("01 Week 1",), "slides.pdf", f"{LE}/content/topics/11/file", 4)],
+                              html_pages=[HtmlPage(12, ("01 Week 1",), "page.html", f"{LE}/content/topics/12/file", "https://bright.uvic.ca/content/enforced/x/page.html", page_html)]),
+    "quizzes": CategoryResult(data=[{"QuizId": 7, "Name": "Quiz 1", "ActivityId": "https://ids.brightspace.com/activities/quiz/QZ-7"}]),
+})
+root = tmp / "content-archive"
+_, jobs, page_jobs = plan(root, [crawl])
+jobs[0].dest.parent.mkdir(parents=True)
+jobs[0].dest.write_bytes(b"%PDF")
+written, failed = write_pages(page_jobs, jobs)
+check("content pages written", failed, [])
+base = root / "Spring 2025 TEST 100" / "content"
+check("content files", sorted(str(p.relative_to(base)).replace("\\", "/") for p in base.rglob("*") if p.is_file()),
+      ["01 Week 1/Quiz 1.html", "01 Week 1/Recordings.url", "01 Week 1/Textbook.url", "01 Week 1/page.html", "01 Week 1/slides.pdf", "content.html", "links.html"])
+check(".url shortcut", (base / "01 Week 1/Textbook.url").read_bytes(), b"[InternetShortcut]\r\nURL=https://example.com/book\r\n")
+check("LTI shortcut keeps Brightspace URL", b"type=lti" in (base / "01 Week 1/Recordings.url").read_bytes(), True)
+check("tool shortcut redirects to archived quiz", 'url=../../quizzes/quizzes.html#quiz-7"' in (base / "01 Week 1/Quiz 1.html").read_text(encoding="utf-8"), True)
+check("HTML topic quickLink (lowercase rcode) rewritten", 'href="../../quizzes/quizzes.html#quiz-7"' in (base / "01 Week 1/page.html").read_text(encoding="utf-8"), True)
+outline = (base / "content.html").read_text(encoding="utf-8")
+check("outline links file and page", 'href="01%20Week%201/slides.pdf">Slides</a>' in outline and 'href="01%20Week%201/page.html">Page</a>' in outline, True)
+check("outline: broken topic noted", "Old notes <span class=\"muted\">missing on Brightspace</span>" in outline, True)
+check("outline: viewContent link in description goes to the file", "<a href=\"01%20Week%201/slides.pdf\">the slides</a>" in outline, True)
+links_page = (base / "links.html").read_text(encoding="utf-8")
+check("links page lists link topics only", re.findall(r'<tr id="topic-(\d+)">', links_page), ["13", "14", "15"])
+check("links page: LTI note", "(only works inside Brightspace)" in links_page, True)

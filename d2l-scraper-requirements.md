@@ -7,10 +7,17 @@
 
 ## 0. Where we left off (2026-09-26)
 
-**Done:** login + encrypted session, course/category pickers, deep crawl, review screen, download options (videos, Markdown, output folder), phase 1 download (all files, raw JSON, `grades.csv`, `classlist.csv`, `calendar.ics`, skip-if-present, retries, re-login mid-download), phase 2 generated HTML pages (`pages.py`, see 4.6). Tested on real courses; 103 tests in `tests/`.
+**Done:** login + encrypted session, course/category pickers, deep crawl, review screen, download options (videos, Markdown, output folder), phase 1 download (all files, raw JSON, `grades.csv`, `classlist.csv`, `calendar.ics`, skip-if-present, retries, re-login mid-download), phase 2 generated HTML pages (`pages.py`), phase 3 self-contained content pages and linked files (`embed.py`); see 4.6. Tested on real courses; 155 tests in `tests/`.
+
+**Phase 3 approach:** the crawl fetches each HTML content page (small) and lists what it references; every downloadable reference (images, `/shared/…` template CSS/JS, linked documents, linked videos) becomes an ordinary crawled file. So the review shows real sizes and linked-video counts, re-runs skip what's on disk, and nothing is fetched twice. The download then writes each HTML page self-contained, embedding its images/CSS/JS from those downloaded copies, and rewrites Brightspace links to the local copies (phase 2 pages, content files).
+
+**Phase 3 decisions** (2026-09-26):
+1. **Original HTML is kept** untouched in `_course-files/_originals/`, next to the self-contained page in the module folder.
+2. **Embedded assets stay on disk** in `_course-files/_assets/` so re-runs don't fetch them again; they're still inlined into every page.
+3. **`_course-files/` is per course** (`<course>/_course-files/`), shared by content, announcements, assignments, and discussions.
+4. **The crawl fetches HTML pages** and checks the size of each linked file; a slower crawl is fine.
 
 **Next:**
-- Phase 3: content HTML topics (API `…/file`), embed images/CSS/JS as data/inline (also in the phase 2 pages' rich text), linked docs → `_course-files/`, videos only if opted in, rewrite Brightspace links, `links.html` + `.url` shortcuts, count videos linked inside HTML in the crawl
 - Phase 4: Markdown copies (`markdownify`) for the kinds chosen in the options dialog
 - Phase 5: end-of-run log file (section 7)
 
@@ -110,9 +117,22 @@ Phase 2 — DONE: generated HTML pages, written after the files and rewritten ev
 - `quizzes/quizzes.html`: dates, time limit, attempts, description/instructions, note that questions aren't available
 - `grades/grades.html`: uncategorised items, then each category row with its items; ungraded items shown as `– / max`; comments under their row; final grade on top
 - Links to downloaded files are relative; files not on disk (skipped videos, failures) are listed with "(not downloaded)"
-- Site-relative links and images in rich text point to `https://bright.uvic.ca/…` until phase 3 embeds them
+- Rich text goes through the same rewriting as content pages (phase 3): images embedded, Brightspace links pointed at the archive
 - Page names are claimed before files, so existing file paths don't change
 - Not tested on a real filled-in rubric (no assessments in the data yet); built from the Valence `RubricAssessment` shape
+
+Phase 3 — DONE: self-contained content pages and linked files (`embed.py`, course files step in `crawl.py`)
+- Crawl: HTML content topics are fetched (not listed as plain files). A last "Linked files" step per course scans those pages and every rich-text string in the crawled JSON, HEADs each Brightspace file referenced (`/content/enforced/…`, `/shared/…`, post `ViewAttachment` images), and fetches stylesheets to find their fonts/images. Missing files (HEAD fails, e.g. another course's folder) are counted as "missing on Brightspace" and left as absolute links
+- `_course-files/`: `_originals/<module path>/` (HTML as downloaded), `_assets/` (anything embedded: images, CSS, JS, woff2 fonts), everything else mirrors its Brightspace folder (e.g. `Lab1_Videos/…`); linked videos follow the video option
+- Embedding: `<img>`, `poster`, stylesheets (with their `url()` images and woff2 fonts; other font formats left as absolute URLs, browsers use woff2) and scripts are inlined; `<a>`, `<iframe>`, `<video>/<source>` link to the local copy. Tags inside `<script>`/`<style>` blocks are never rewritten. Charset declarations become UTF-8
+- Brightspace links: quickLinks resolve offline by matching `rcode` (any case) to the `ActivityId` of assignments, quizzes, discussion topics, and content topics; `viewContent`, discussion topic/thread, dropbox `db=`, and quiz `qi=` links are resolved too. Targets: assignment/topic pages, `quizzes.html#quiz-N`, content files/pages, else the topic's entry in `content.html`. LTI links and iframes always go to Brightspace (iframes become a visible "only works inside Brightspace" box)
+- Post images that are also post attachments reuse the downloaded attachment (MATH 211: all 141)
+- `content/content.html`: every module and topic in instructor order (topics and submodules interleaved by `SortOrder`), module/topic descriptions and dates, broken topics noted
+- `content/links.html`: link topics grouped by module (title → archived copy or web address, kind, address)
+- Shortcuts in module folders: `.url` for web links and LTI tools; a small redirect `.html` for Brightspace tool links (assignment, quiz, discussion, content) so it opens the archived copy
+- The review shows a "Linked files" row; linked videos count in the Videos row (CSC 230: 39 videos, 1.0 GB)
+- Tested live on ATWP 135 (UVic template pages, ~690 KB each with Bootstrap/Font Awesome inlined; they render with the network blocked), CSC 230 (lab video pages), MATH 211 (post images)
+- Left for later: files from earlier runs that are no longer produced aren't removed (sync); Google Fonts and `s.brightspace.com` stylesheets stay external (decided in 5.2); relative image paths in rich text can't be resolved (no base URL); the instructor-only `dropbox/admin` links stay absolute
 
 - Folder structure: see 5.3
 - Filename rules: whitespace collapsed; `<>:"/\|?*` and control characters → `_`; trailing dots/spaces trimmed; Windows reserved names (`CON`, `COM1`, …) prefixed with `_`; names capped at 80 characters keeping the extension; file names shortened to keep paths under 250 characters where the folder allows
@@ -249,9 +269,10 @@ Tier: **Easy** = direct API download · **Medium** = needs assembling or rewriti
       01 Course Outline/                modules in instructor order
         Welcome Letter.pdf              files in their original format
         Office Hours.html               self-contained page (images/CSS/JS embedded)
-        Course Notes Link.url           shortcut for a link-only item
+        Course Notes Link.url           shortcut for a web link or external tool
+        Lab 2.html                      redirect to the archived copy of a Brightspace tool link
       02 Week 1/…
-      _course-files/…                   documents (and opted-in videos) linked from HTML pages
+      content.html                      outline: every module and topic with descriptions
       links.html                        every link-only item, grouped by module
       content.json
     announcements/
@@ -265,6 +286,10 @@ Tier: **Easy** = direct API download · **Medium** = needs assembling or rewriti
     discussions/
       <Forum>/<Topic>.html
       <Forum>/<Topic>/attachments/…
+    _course-files/                      per course, shared by all categories
+      _originals/01 Course Outline/…    HTML content pages as downloaded
+      _assets/…                         images, CSS, JS, fonts embedded into pages
+      Lab1_Videos/…                     linked documents (and opted-in videos), in their Brightspace folders
       discussions.json
     grades/        grades.html   grades.csv   grades.json
     quizzes/       quizzes.html   quizzes.json

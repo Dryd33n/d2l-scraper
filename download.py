@@ -15,14 +15,16 @@ from rich.markup import escape
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from auth import ApiError, Session, SessionExpired, relogin
-from crawl import COURSE_INFO, CourseCrawl, RemoteFile
+from crawl import COURSE_FILES, COURSE_INFO, CourseCrawl, RemoteFile
+from embed import rewrite_html
 from exports import write_calendar_ics, write_classlist_csv, write_grades_csv
-from pages import Context, Page, api_tail, document, pages_for, people
+from pages import Context, Page, api_tail, document, pages_for, people, targets
 from prompts import DownloadOptions
 from ui import console, warn
 
-CATEGORY_DIRS = {COURSE_INFO: "course info"}  # every other category's folder is its key
+CATEGORY_DIRS = {COURSE_INFO: "course info", COURSE_FILES: "_course-files"}  # every other category's folder is its key
 JSON_NAMES = {COURSE_INFO: "course.json"}  # every other category's JSON is "<key>.json"
+NO_JSON = {COURSE_FILES}  # found in other categories' JSON; nothing of its own to save
 EXPORTS = {
     "grades": ("grades.csv", write_grades_csv),
     "classlist": ("classlist.csv", write_classlist_csv),
@@ -111,7 +113,8 @@ def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job], list[
             if result.error is not None:
                 continue
             base = category_dir(root, crawl, key)
-            namer.claim(base, JSON_NAMES.get(key, f"{key}.json"))
+            if key not in NO_JSON:
+                namer.claim(base, JSON_NAMES.get(key, f"{key}.json"))
             if key in EXPORTS:
                 namer.claim(base, EXPORTS[key][0])
             for page in pages_for(key, result):
@@ -128,7 +131,7 @@ def write_metadata(root: Path, crawls: list[CourseCrawl]) -> list[tuple[Path, st
     failed = []
     for crawl in crawls:
         for key, result in crawl.results.items():
-            if result.error is not None:
+            if result.error is not None or key in NO_JSON:
                 continue
             base = category_dir(root, crawl, key)
             base.mkdir(parents=True, exist_ok=True)
@@ -151,12 +154,17 @@ def write_pages(page_jobs: list[PageJob], jobs: list[Job]) -> tuple[int, list[tu
         names = people(crawl)
         mine = [pj for pj in page_jobs if pj.crawl is crawl]
         course_page = next((pj.dest for pj in mine if pj.key == COURSE_INFO), None)
+        by_key = {pj.page.key: pj.dest for pj in mine if pj.page.key}
+        where = targets(crawl)
         for pj in mine:
-            ctx = Context(crawl, pj.dest, course_page, files, names)
+            ctx = Context(crawl, pj.dest, course_page, files, names, by_key, where)
             try:
-                text = document(ctx, pj.page, pj.page.render(ctx))
+                if pj.page.standalone:
+                    text = pj.page.render(ctx)
+                else:  # generated pages: embed rich text's images, point its links at the archive
+                    text = document(ctx, pj.page, rewrite_html(pj.page.render(ctx), None, ctx))
                 pj.dest.parent.mkdir(parents=True, exist_ok=True)
-                pj.dest.write_text(text, encoding="utf-8")
+                pj.dest.write_bytes(text.encode("utf-8"))
                 written += 1
             except Exception as e:  # one odd record shouldn't cost the other pages
                 failed.append((pj.dest, f"{type(e).__name__}: {e}"))
@@ -222,7 +230,7 @@ def _download_files(p: Playwright, session: Session, todo: list[Job], summary: S
         for job in todo:
             progress.update(task, description=escape(f"{job.crawl.course.short_name} · {job.dest.name}"))
             try:
-                data = _fetch(p, session, job, progress)
+                data = job.file.data if job.file.data is not None else _fetch(p, session, job, progress)
                 job.dest.parent.mkdir(parents=True, exist_ok=True)
                 partial = job.dest.with_name(job.dest.name + ".part")
                 partial.write_bytes(data)

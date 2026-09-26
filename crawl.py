@@ -6,14 +6,15 @@ and the raw API JSON so the download step can write metadata without fetching it
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any, Callable
-from urllib.parse import unquote
+from typing import Any, Callable, Iterator
+from urllib.parse import quote, unquote
 
 from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
-from auth import ApiError, Session, SessionExpired
+from auth import BASE_URL, ApiError, Session, SessionExpired
 from courses import Course
+from embed import canonical, css_refs, decode, html_refs, local_folder, view_attachment
 from ui import console, plural
 
 # Categories the user picks from
@@ -28,8 +29,10 @@ CATEGORIES = {
     "calendar": "Calendar",
 }
 COURSE_INFO = "course_info"  # always crawled, never shown in the picker
-LABELS = {COURSE_INFO: "Course info", **CATEGORIES}
+COURSE_FILES = "course_files"  # files referenced from HTML pages and rich text; always crawled last
+LABELS = {COURSE_INFO: "Course info", **CATEGORIES, COURSE_FILES: "Linked files"}
 
+HTML_EXTENSIONS = {".html", ".htm"}
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm", ".avi", ".mkv", ".wmv"}
 CALENDAR_RANGE = {"startDateTime": "2000-01-01T00:00:00.000Z", "endDateTime": "2100-01-01T00:00:00.000Z"}
 
@@ -42,10 +45,22 @@ class RemoteFile:
     name: str
     url: str  # API path to GET when downloading
     size: int | None  # None when the server doesn't report a size
+    data: bytes | None = field(default=None, repr=False)  # already fetched during the crawl; not fetched again
 
     @property
     def is_video(self) -> bool:
         return PurePosixPath(self.name.lower()).suffix in VIDEO_EXTENSIONS
+
+
+@dataclass
+class HtmlPage:
+    """An HTML content topic, fetched during the crawl so its references can be found."""
+    topic_id: int
+    path: tuple[str, ...]  # module folders, like RemoteFile.path
+    name: str
+    url: str  # API path it was fetched from
+    base: str  # absolute URL its relative references resolve against
+    html: bytes = field(repr=False)
 
 
 @dataclass
@@ -57,6 +72,7 @@ class CategoryResult:
     note: str = ""  # extra detail for display, e.g. "2 forums · 10 topics"
     data: Any = None  # raw API JSON
     error: str | None = None  # set when the category couldn't be crawled
+    html_pages: list[HtmlPage] = field(default_factory=list)  # content only
 
 
 @dataclass
@@ -139,37 +155,44 @@ def _content(s: Session, course: Course, status: Status) -> CategoryResult:
     toc = s.get_json(f"/d2l/api/le/{{le}}/{ou}/content/toc")
     r = CategoryResult(unit="topic", data=toc)
 
-    def walk(modules, path):
-        # number module folders so they keep the instructor's order on disk
-        for i, m in enumerate(sorted(modules, key=lambda m: m["SortOrder"]), 1):
-            here = (*path, f"{i:02d} {m['Title']}")
-            for t in m["Topics"]:
-                yield here, t
-            yield from walk(m["Modules"], here)
-
-    topics = list(walk(toc["Modules"], ()))
+    modules = list(walk_toc(toc["Modules"]))
+    topics = [(path, t) for path, m in modules for t in m["Topics"]]
     r.items = len(topics)
     all_files = [(path, t) for path, t in topics if t["TypeIdentifier"] == "File"]
     # a broken topic's file is missing on Brightspace itself (IsBroken, no Url); the download would 404
     file_topics = [(path, t) for path, t in all_files if not t["IsBroken"] and t["Url"]]
     broken = len(all_files) - len(file_topics)
     r.links = len(topics) - len(all_files)
-    r.note = plural(sum(1 for _ in _modules(toc["Modules"])), "module")
+    r.note = plural(len(modules), "module")
     if broken:
         r.note += f" · {plural(broken, 'broken file')}"
 
     for i, (path, t) in enumerate(file_topics, 1):
-        status(f"file sizes {i}/{len(file_topics)}")
         url = f"/d2l/api/le/{le}/{ou}/content/topics/{t['TopicId']}/file"
         name = PurePosixPath(unquote(t["Url"])).name or t["Title"]
-        r.files.append(RemoteFile(path, name, url, s.head_size(url)))
+        if PurePosixPath(name.lower()).suffix in HTML_EXTENSIONS:
+            # fetched now so the course files step can find what the page references; the download
+            # writes a self-contained copy here and keeps this original under _course-files/_originals
+            status(f"pages {i}/{len(file_topics)}")
+            try:
+                html = s.fetch(url)
+            except ApiError:
+                r.files.append(RemoteFile(path, name, url, None))  # let the download report the failure
+                continue
+            r.html_pages.append(HtmlPage(t["TopicId"], path, name, url, BASE_URL + quote(unquote(t["Url"]), safe="/()!$'*+,;=:@-._~&"), html))
+        else:
+            status(f"file sizes {i}/{len(file_topics)}")
+            r.files.append(RemoteFile(path, name, url, s.head_size(url)))
     return r
 
 
-def _modules(modules):
-    for m in modules:
-        yield m
-        yield from _modules(m["Modules"])
+def walk_toc(modules: list[dict], path: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], dict]]:
+    """(folder path, module) for every module, parents first. Folders are numbered so they keep
+    the instructor's order on disk, e.g. ("01 Week 1", "02 Slides")."""
+    for i, m in enumerate(sorted(modules, key=lambda m: m["SortOrder"]), 1):
+        here = (*path, f"{i:02d} {m['Title']}")
+        yield here, m
+        yield from walk_toc(m["Modules"], here)
 
 
 def _classlist(s: Session, course: Course, status: Status) -> CategoryResult:
@@ -294,6 +317,82 @@ def _calendar(s: Session, course: Course, status: Status) -> CategoryResult:
     return CategoryResult(unit="event", items=len(events), data=events)
 
 
+def _strings(data) -> Iterator[str]:
+    """Every string in a JSON value that could hold HTML."""
+    if isinstance(data, str):
+        if "<" in data:
+            yield data
+    elif isinstance(data, dict):
+        for value in data.values():
+            yield from _strings(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from _strings(value)
+
+
+def _course_files(s: Session, course: Course, status: Status, results: dict[str, CategoryResult]) -> CategoryResult:
+    """Files referenced from HTML content pages and from rich text (announcements, posts, instructions, ...):
+    the course files they link to, and the images, stylesheets, and scripts to embed. Also keeps the
+    untouched originals of the HTML content pages."""
+    r = CategoryResult(unit="file")
+    content = results.get("content")
+    html_pages = content.html_pages if content and content.error is None else []
+    for page in html_pages:
+        r.files.append(RemoteFile(("_originals", *page.path), page.name, page.url, len(page.html), page.html))
+
+    # images shown inside posts are usually also post attachments, which the discussion download has
+    attached = set()
+    discussions = results.get("discussions")
+    if discussions and discussions.error is None:
+        attached = {(p["PostId"], a["FileId"]) for f in discussions.data for t in f["topics"]
+                    for p in t["posts"] for a in p["Attachments"]}
+
+    wanted: dict[str, bool] = {}  # canonical path -> embedded; embedded wins when a file is both
+    def add(refs):
+        for ref in refs:
+            key = canonical(ref.url)
+            post_image = view_attachment(key) if key else None
+            if key and not (post_image and post_image[1:] in attached):
+                wanted[key] = wanted.get(key, False) or ref.embedded
+
+    for page in html_pages:
+        add(html_refs(decode(page.html), page.base))
+    for result in results.values():
+        if result.error is None:
+            for text in _strings(result.data):
+                add(html_refs(text, None))  # rich text: relative references can't be resolved
+
+    queue, missing = list(wanted.items()), 0
+    for i, (key, embedded) in enumerate(queue):  # stylesheets append what they reference while this runs
+        status(f"linked files {i + 1}/{len(queue)}")
+        exists, size, headers = s.head(key)
+        if not exists:
+            missing += 1
+            continue
+        folder, name = local_folder(key, embedded)
+        if post_image := view_attachment(key):
+            name = _filename_from_headers(headers, f"image-{post_image[2]}")
+        data = None
+        if embedded and ("text/css" in headers.get("content-type", "") or name.lower().endswith(".css")):
+            try:
+                data = s.fetch(key)  # fetched now to find the fonts and images it uses
+            except ApiError:
+                missing += 1
+                continue
+            for ref in css_refs(decode(data), BASE_URL + key):
+                if (k := canonical(ref.url)) and k not in wanted:
+                    wanted[k] = True
+                    queue.append((k, True))
+        r.files.append(RemoteFile(folder, name, key, len(data) if data is not None else size, data))
+
+    r.items = len(r.files)
+    notes = [plural(len(html_pages), "HTML page")] if html_pages else []
+    if missing:
+        notes.append(f"{missing} missing on Brightspace")
+    r.note = " · ".join(notes)
+    return r
+
+
 CRAWLERS = {
     COURSE_INFO: _course_info,
     "content": _content,
@@ -307,9 +406,13 @@ CRAWLERS = {
 }
 
 
-def crawl_category(session: Session, course: Course, key: str, status: Status) -> CategoryResult:
-    """Crawl one category. API errors become `error` on the result instead of stopping the crawl."""
+def crawl_category(session: Session, course: Course, key: str, status: Status,
+                   results: dict[str, CategoryResult] | None = None) -> CategoryResult:
+    """Crawl one category. API errors become `error` on the result instead of stopping the crawl.
+    Course files need the other categories' `results`."""
     try:
+        if key == COURSE_FILES:
+            return _course_files(session, course, status, results or {})
         return CRAWLERS[key](session, course, status)
     except SessionExpired:
         raise
@@ -321,8 +424,8 @@ def crawl_category(session: Session, course: Course, key: str, status: Status) -
 
 
 def crawl(session: Session, courses: list[Course], categories: list[str]) -> list[CourseCrawl]:
-    """Crawl course info plus every selected category of every selected course, with a progress bar."""
-    keys = [COURSE_INFO, *categories]
+    """Crawl course info, every selected category, and the files they link to, for every selected course."""
+    keys = [COURSE_INFO, *categories, COURSE_FILES]
     crawls = []
     with Progress(
         SpinnerColumn(),
@@ -339,7 +442,7 @@ def crawl(session: Session, courses: list[Course], categories: list[str]) -> lis
                 label = escape(f"{course.short_name} · {LABELS[key]}")
                 progress.update(task, description=label)
                 status = lambda text: progress.update(task, description=f"{label} [dim]{escape(text)}[/]")
-                results[key] = crawl_category(session, course, key, status)
+                results[key] = crawl_category(session, course, key, status, results)
                 progress.advance(task)
             crawls.append(CourseCrawl(course, results))
     return crawls

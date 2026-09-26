@@ -2,7 +2,7 @@
 
 A command-line tool for archiving your own course data from a D2L Brightspace instance. You log in through a normal browser window, pick the courses and kinds of content you want, review exactly what will be downloaded, and the tool fetches it through D2L's read-only Valence API.
 
-> **Status: work in progress.** The full flow works end to end: every file is downloaded, raw JSON is saved, grades, classlist, and calendar are exported to CSV and `.ics`, and readable HTML pages are generated for course info, announcements, assignments, discussions, quizzes, and grades. Still to come: self-contained content pages (with images embedded), and Markdown copies.
+> **Status: work in progress.** The full flow works end to end: every file is downloaded, raw JSON is saved, grades, classlist, and calendar are exported to CSV and `.ics`, readable HTML pages are generated for course info, announcements, assignments, discussions, quizzes, grades, and the content outline, and HTML content pages are saved self-contained (images, styles, and scripts embedded; Brightspace links pointing at the archive). Still to come: Markdown copies and an end-of-run log.
 
 Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`). Support for other D2L instances is planned.
 
@@ -104,7 +104,7 @@ Coming next:
 <output root>/
   Spring 2025 CSC 230 A01 - A04 X/
     course info/     course.html  course.json  course-image.jpg
-    content/         01 Course Outline/…  links.html  content.json
+    content/         01 Course Outline/…  content.html  links.html  content.json
     announcements/   announcements.html  attachments/  announcements.json
     assignments/     <Assignment>/assignment.html  attachments/  submissions/  feedback/
     discussions/     <Forum>/<Topic>.html
@@ -112,6 +112,7 @@ Coming next:
     quizzes/         quizzes.html  quizzes.json
     classlist/       classlist.csv  classlist.json
     calendar/        calendar.ics  calendar.json
+    _course-files/   files linked from pages, _assets/ (embedded images, CSS, JS), _originals/ (HTML pages as downloaded)
 ```
 
 Quiz questions and attempts can't be archived: the API refuses them to students, so only quiz details are saved. Content topics whose file is missing on Brightspace itself ("broken" topics) are listed in the review and skipped.
@@ -164,9 +165,9 @@ python tests/test_auth.py             # session encryption and validation (needs
 - [x] Pause and re-login if the session expires mid-download
 - [x] Re-runs skip files already downloaded
 - [x] Generated HTML pages: announcements, assignments, discussions, quizzes, grades, course info
-- [ ] Embed images in generated pages (they link to Brightspace for now)
-- [ ] Self-contained content HTML pages; record link-only items (`links.html`, `.url`)
-- [ ] Count videos linked from inside HTML pages
+- [x] Embed images in generated pages
+- [x] Self-contained content HTML pages; record link-only items (`content.html`, `links.html`, `.url`)
+- [x] Count videos linked from inside HTML pages
 - [ ] Markdown conversion of generated pages
 - [ ] End-of-run log file
 - [ ] Full sync (detect changed and removed items)
