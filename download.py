@@ -1,7 +1,7 @@
-"""Download phase: raw JSON, spreadsheet/calendar exports, and every crawled file.
+"""Download phase: raw JSON, spreadsheet/calendar exports, every crawled file, and the generated pages.
 
 Files that already exist with the expected size are skipped, so re-running resumes an interrupted
-download. JSON and exports are always rewritten.
+download. JSON, exports, and pages are always rewritten.
 """
 
 import json
@@ -17,6 +17,7 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from auth import ApiError, Session, SessionExpired, relogin
 from crawl import COURSE_INFO, CourseCrawl, RemoteFile
 from exports import write_calendar_ics, write_classlist_csv, write_grades_csv
+from pages import Context, Page, api_tail, document, pages_for, people
 from prompts import DownloadOptions
 from ui import console, warn
 
@@ -74,11 +75,20 @@ class Job:
 
 
 @dataclass
+class PageJob:
+    crawl: CourseCrawl
+    key: str  # category
+    page: Page
+    dest: Path
+
+
+@dataclass
 class Summary:
     downloaded: int = 0
     downloaded_bytes: int = 0
     skipped_existing: int = 0
     skipped_videos: int = 0
+    pages: int = 0
     failed: list[tuple[Path, str]] = field(default_factory=list)
 
 
@@ -92,10 +102,10 @@ def category_dir(root: Path, crawl: CourseCrawl, key: str) -> Path:
     return course_dir(root, crawl) / CATEGORY_DIRS.get(key, key)
 
 
-def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job]]:
-    """Decide where every file goes. JSON and export names are claimed first so files can't take them."""
+def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job], list[PageJob]]:
+    """Decide where every file and page goes. JSON, export, and page names are claimed first so files can't take them."""
     namer = Namer()
-    jobs = []
+    jobs, page_jobs = [], []
     for crawl in crawls:
         for key, result in crawl.results.items():
             if result.error is not None:
@@ -104,10 +114,13 @@ def plan(root: Path, crawls: list[CourseCrawl]) -> tuple[Namer, list[Job]]:
             namer.claim(base, JSON_NAMES.get(key, f"{key}.json"))
             if key in EXPORTS:
                 namer.claim(base, EXPORTS[key][0])
+            for page in pages_for(key, result):
+                directory = base.joinpath(*(safe_name(part) for part in page.path))
+                page_jobs.append(PageJob(crawl, key, page, namer.claim(directory, page.name)))
             for f in result.files:
                 directory = base.joinpath(*(safe_name(part) for part in f.path))
                 jobs.append(Job(crawl, f, namer.claim(directory, f.name)))
-    return namer, jobs
+    return namer, jobs, page_jobs
 
 
 def write_metadata(root: Path, crawls: list[CourseCrawl]) -> list[tuple[Path, str]]:
@@ -128,6 +141,26 @@ def write_metadata(root: Path, crawls: list[CourseCrawl]) -> list[tuple[Path, st
                 except Exception as e:  # a surprising record shouldn't lose the rest of the archive
                     failed.append((base / name, f"{type(e).__name__}: {e}"))
     return failed
+
+
+def write_pages(page_jobs: list[PageJob], jobs: list[Job]) -> tuple[int, list[tuple[Path, str]]]:
+    """Render every generated page, linking to wherever the download put each file. Returns (written, failures)."""
+    written, failed = 0, []
+    for crawl in {id(pj.crawl): pj.crawl for pj in page_jobs}.values():
+        files = {api_tail(j.file.url, crawl.course.id): j.dest for j in jobs if j.crawl is crawl}
+        names = people(crawl)
+        mine = [pj for pj in page_jobs if pj.crawl is crawl]
+        course_page = next((pj.dest for pj in mine if pj.key == COURSE_INFO), None)
+        for pj in mine:
+            ctx = Context(crawl, pj.dest, course_page, files, names)
+            try:
+                text = document(ctx, pj.page, pj.page.render(ctx))
+                pj.dest.parent.mkdir(parents=True, exist_ok=True)
+                pj.dest.write_text(text, encoding="utf-8")
+                written += 1
+            except Exception as e:  # one odd record shouldn't cost the other pages
+                failed.append((pj.dest, f"{type(e).__name__}: {e}"))
+    return written, failed
 
 
 def _already_have(job: Job) -> bool:
@@ -159,7 +192,7 @@ def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options
     summary = Summary()
     summary.failed += write_metadata(root, crawls)
 
-    _, jobs = plan(root, crawls)
+    _, jobs, page_jobs = plan(root, crawls)
     wanted = [j for j in jobs if options.videos or not j.file.is_video]
     summary.skipped_videos = len(jobs) - len(wanted)
     todo = []
@@ -168,9 +201,14 @@ def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options
             summary.skipped_existing += 1
         else:
             todo.append(job)
-    if not todo:
-        return summary
+    if todo:
+        _download_files(p, session, todo, summary)
+    summary.pages, failed = write_pages(page_jobs, jobs)  # after the files, so links know what's on disk
+    summary.failed += failed
+    return summary
 
+
+def _download_files(p: Playwright, session: Session, todo: list[Job], summary: Summary) -> None:
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -196,4 +234,3 @@ def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options
             except Exception as e:
                 summary.failed.append((job.dest, f"{type(e).__name__}: {e}"))
             progress.advance(task, job.file.size or 0)
-    return summary

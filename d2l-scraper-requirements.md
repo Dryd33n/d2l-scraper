@@ -5,6 +5,19 @@
 
 ---
 
+## 0. Where we left off (2026-09-26)
+
+**Done:** login + encrypted session, course/category pickers, deep crawl, review screen, download options (videos, Markdown, output folder), phase 1 download (all files, raw JSON, `grades.csv`, `classlist.csv`, `calendar.ics`, skip-if-present, retries, re-login mid-download), phase 2 generated HTML pages (`pages.py`, see 4.6). Tested on real courses; 103 tests in `tests/`.
+
+**Next:**
+- Phase 3: content HTML topics (API `…/file`), embed images/CSS/JS as data/inline (also in the phase 2 pages' rich text), linked docs → `_course-files/`, videos only if opted in, rewrite Brightspace links, `links.html` + `.url` shortcuts, count videos linked inside HTML in the crawl
+- Phase 4: Markdown copies (`markdownify`) for the kinds chosen in the options dialog
+- Phase 5: end-of-run log file (section 7)
+
+**Testing notes:** `tests/fixtures/*.pkl` are crawl results pickled from real courses (git-ignored, personal data). Regenerate with `python tests/run_crawl.py tests/fixtures/with_videos.pkl 382134,504907` and `… without_videos.pkl 397411,376123,507204,293541`. The pickles predate the current grades/course-info JSON shape, so `test_pages.py` uses hand-built records; regenerate them before relying on them for new tests. Prompt tests drive questionary with `create_pipe_input`; tests run inside `sync_playwright()` because prompts must work while Playwright owns the main thread's event loop.
+
+---
+
 ## 1. Overview
 
 **Purpose:** Archive course data from a D2L Brightspace instance for personal use, letting the user pick which courses and which kinds of content to download.
@@ -87,6 +100,19 @@ One more dialog after the review screen, before anything is downloaded:
 
 ### 4.6 Download
 Phase 1 — DONE: raw JSON, all files, `grades.csv`, `classlist.csv`, `calendar.ics`.
+
+Phase 2 — DONE: generated HTML pages, written after the files and rewritten every run (`pages.py`)
+- One shared inline style (light and dark), breadcrumb back to `course.html`, dates in local time
+- `course info/course.html`: banner, code, dates, role, Brightspace link, overview + attachment
+- `announcements/announcements.html`: newest first; author name looked up in the classlist when it was crawled
+- `assignments/<name>/assignment.html`: due date, instructions, attachments and link attachments, rubric table (spare empty levels hidden; chosen levels highlighted with score and feedback when `RubricAssessments` exist), my submissions, feedback (score, text, files, links)
+- `discussions/<forum>/<topic>.html`: pinned threads first, then newest thread first; replies nested, oldest first; replies whose parent wasn't returned become threads; topics that failed get a note
+- `quizzes/quizzes.html`: dates, time limit, attempts, description/instructions, note that questions aren't available
+- `grades/grades.html`: uncategorised items, then each category row with its items; ungraded items shown as `– / max`; comments under their row; final grade on top
+- Links to downloaded files are relative; files not on disk (skipped videos, failures) are listed with "(not downloaded)"
+- Site-relative links and images in rich text point to `https://bright.uvic.ca/…` until phase 3 embeds them
+- Page names are claimed before files, so existing file paths don't change
+- Not tested on a real filled-in rubric (no assessments in the data yet); built from the Valence `RubricAssessment` shape
 
 - Folder structure: see 5.3
 - Filename rules: whitespace collapsed; `<>:"/\|?*` and control characters → `_`; trailing dots/spaces trimmed; Windows reserved names (`CON`, `COM1`, …) prefixed with `_`; names capped at 80 characters keeping the extension; file names shortened to keep paths under 250 characters where the folder allows

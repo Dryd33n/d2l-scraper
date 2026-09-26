@@ -62,6 +62,8 @@ def print_summary(summary: Summary, options: DownloadOptions) -> None:
         ok(f"Skipped {plural(summary.skipped_existing, 'file')} already in the archive")
     if summary.skipped_videos:
         ok(f"Skipped {plural(summary.skipped_videos, 'video')} [dim](not opted in)[/]")
+    if summary.pages:
+        ok(f"Wrote {plural(summary.pages, 'page')}")
     if options.markdown:
         warn("Markdown copies aren't implemented yet; nothing was converted.")
     for path, reason in summary.failed[:10]:

@@ -2,7 +2,7 @@
 
 A command-line tool for archiving your own course data from a D2L Brightspace instance. You log in through a normal browser window, pick the courses and kinds of content you want, review exactly what will be downloaded, and the tool fetches it through D2L's read-only Valence API.
 
-> **Status: work in progress.** The full flow works end to end: every file is downloaded, raw JSON is saved, and grades, classlist, and calendar are exported to CSV and `.ics`. Still to come: readable HTML pages for announcements, assignments, discussions, and the rest, self-contained content pages, and Markdown copies.
+> **Status: work in progress.** The full flow works end to end: every file is downloaded, raw JSON is saved, grades, classlist, and calendar are exported to CSV and `.ics`, and readable HTML pages are generated for course info, announcements, assignments, discussions, quizzes, and grades. Still to come: self-contained content pages (with images embedded), and Markdown copies.
 
 Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`). Support for other D2L instances is planned.
 
@@ -135,9 +135,24 @@ review.py      Review screen: counts and sizes per course, ←/→ to switch
 prompts.py     Interactive prompts: courses, categories, download options, output folder
 download.py    Output paths, raw JSON, file downloads with skip-if-present and re-login
 exports.py     grades.csv, classlist.csv, calendar.ics
+tests/         Test scripts (fixtures in tests/fixtures/ are git-ignored)
 ui.py          Shared terminal styling and helpers
 d2l-scraper-requirements.md   Design notes, content inventory, and decisions
 ```
+
+## Tests
+
+Plain scripts that print `PASS`/`FAIL` per check:
+
+```bash
+python tests/test_download_units.py   # filenames, path limits, CSV and .ics output
+python tests/test_expiry.py           # re-login when the session expires mid-download
+python tests/test_review.py           # review screen keys and layout
+python tests/test_prompts.py          # course/category/options prompts via simulated keypresses
+python tests/test_auth.py             # session encryption and validation (needs a logged-in session)
+```
+
+`test_review.py` and `test_prompts.py` use crawl fixtures in `tests/fixtures/`. They contain real course data, so they're git-ignored; generate them with `tests/run_crawl.py` (see section 0 of the requirements doc).
 
 ## Roadmap
 
@@ -148,7 +163,8 @@ d2l-scraper-requirements.md   Design notes, content inventory, and decisions
 - [x] Download every file, raw JSON, grades/classlist CSV, calendar `.ics`
 - [x] Pause and re-login if the session expires mid-download
 - [x] Re-runs skip files already downloaded
-- [ ] Generated HTML pages: announcements, assignments, discussions, quizzes, grades, course info
+- [x] Generated HTML pages: announcements, assignments, discussions, quizzes, grades, course info
+- [ ] Embed images in generated pages (they link to Brightspace for now)
 - [ ] Self-contained content HTML pages; record link-only items (`links.html`, `.url`)
 - [ ] Count videos linked from inside HTML pages
 - [ ] Markdown conversion of generated pages
