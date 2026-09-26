@@ -5,6 +5,7 @@ from pathlib import Path
 
 import questionary
 
+from auth import DEFAULT_PROFILE, PROFILES
 from courses import Course, by_term
 from crawl import CATEGORIES, COURSE_INFO, CourseCrawl, total_size
 from ui import PROMPT_STYLE, format_size, in_thread, plural
@@ -32,6 +33,7 @@ class DownloadOptions:
     videos: bool
     markdown: list[str]  # keys of MARKDOWN_KINDS to also save as .md
     output: Path = DEFAULT_OUTPUT
+    profile: str = DEFAULT_PROFILE  # key of auth.PROFILES, chosen right after login
 
 
 def _check_output(text: str) -> bool | str:
@@ -44,6 +46,19 @@ def _check_output(text: str) -> bool | str:
     if path.exists() and not path.is_dir():
         return "That's a file, not a folder"
     return True
+
+
+def select_profile() -> str | None:
+    """Ask how hard to hit the server (how many requests run at once). Returns a key of PROFILES, or None if cancelled."""
+    choices = [questionary.Choice(title=f"{p.name} ({p.workers} at a time)", value=key, description=p.description)
+               for key, p in PROFILES.items()]
+    return in_thread(questionary.select(
+        "Scraping profile:",
+        choices=choices,
+        default=next(c for c in choices if c.value == DEFAULT_PROFILE),
+        instruction="(↑/↓ choose · enter confirm)",
+        style=PROMPT_STYLE,
+    ).ask)
 
 
 def select_categories() -> list[str] | None:

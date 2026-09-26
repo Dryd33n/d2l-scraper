@@ -132,6 +132,10 @@ class FakeSession:
         return True, len(data), headers
     def fetch(self, path):
         return self.files[path][0]
+    def head_many(self, paths, done=None):
+        return [self.head(path) for path in paths]
+    def map(self, fn, items, done=None):
+        return [fn(item) for item in items]
 
 course = Course(1, "", "Spring 2025 TEST 100", True, "202501")
 html = f'<link rel="stylesheet" href="/shared/T/s.css"><img src="img/a.png"><a href="Lab1/v.mp4">v</a><a href="gone.pdf">g</a>'.encode()

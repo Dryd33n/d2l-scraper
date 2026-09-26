@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from auth import PROFILES
 from crawl import LABELS, CourseCrawl, total_size
 from ui import format_size, plural
 
@@ -46,6 +47,8 @@ def duration(seconds: float) -> str:
 
 def _header(title: str, started: datetime, finished: datetime, stopped: str | None, options) -> list[str]:
     markdown = ", ".join(LABELS.get(k, k) for k in options.markdown) or "none"
+    profile = PROFILES.get(options.profile)
+    profile_text = f" · profile {profile.name} ({profile.workers} at a time)" if profile else ""
     end = local_time(finished)
     if finished.date() == started.date():
         end = end.split(", ", 1)[1]  # just the time
@@ -53,7 +56,7 @@ def _header(title: str, started: datetime, finished: datetime, stopped: str | No
         RULE,
         f"{title}  {local_time(started)} to {end} ({duration((finished - started).total_seconds())})",
         f"Result: {'stopped early: ' + stopped if stopped else 'completed'}",
-        f"Options: videos {'yes' if options.videos else 'no'} · Markdown copies: {markdown}",
+        f"Options: videos {'yes' if options.videos else 'no'} · Markdown copies: {markdown}{profile_text}",
         f"Archive: {options.output}",
         RULE,
     ]

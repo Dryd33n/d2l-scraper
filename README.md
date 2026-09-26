@@ -45,9 +45,10 @@ python main.py
 ```
 
 1. **Log in.** The first time you run it (or whenever your session has expired), a Chromium window opens on the Brightspace login page. Log in as usual; the window closes once you reach the Brightspace home page.
-2. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out.
-3. **Pick categories** the same way. All are checked by default.
-4. **Review.** The tool crawls every selected course and shows a summary box. **←/→** switches between courses (with several courses, the first page totals all of them), **enter** continues, **esc** cancels.
+2. **Pick a scraping profile**: how many requests run at once. **Polite** (3), **Fair** (6, the default), or **Aggressive** (12). Everything runs in parallel; the profile only sets how hard Brightspace gets hit.
+3. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out.
+4. **Pick categories** the same way. All are checked by default.
+5. **Review.** The tool crawls every selected course and shows a summary box. **←/→** switches between courses (with several courses, the first page totals all of them), **enter** continues, **esc** cancels.
 
    ```
    ┌───────────────────── CSC 230 A01 - A04 X · Spring 2025  1/1 ─────────────────────┐
@@ -71,8 +72,8 @@ python main.py
 
    "Linked files" are files that pages point to rather than list as topics: documents and videos linked from content pages, and the images, stylesheets, and scripts that get embedded into pages.
 
-5. **Choose download options.** Whether to include videos (off by default; not asked if there are none), which kinds of generated page should also get a Markdown copy, and where to save the archive. The default is the git-ignored `D2L Archive/` folder in this repository. Other folders inside the repository are refused, since they could get committed.
-6. **Download.** A progress bar shows bytes and time remaining, then a summary of what was downloaded, skipped, and failed, and where the log is.
+6. **Choose download options.** Whether to include videos (off by default; not asked if there are none), which kinds of generated page should also get a Markdown copy, and where to save the archive. The default is the git-ignored `D2L Archive/` folder in this repository. Other folders inside the repository are refused, since they could get committed.
+7. **Download.** A progress bar shows bytes and time remaining, then a summary of what was downloaded, skipped, and failed, and where the log is.
 
 Run it again with the same selection to fill in anything missing: files already in the archive with the right size are skipped. Pages, JSON, and exports are rewritten every run.
 
@@ -125,9 +126,9 @@ D2L Archive/
 ## How it works
 
 - **Authentication**: [Playwright](https://playwright.dev/python/) opens a visible browser for you to log in. The resulting cookies are saved with `storage_state`, encrypted with [Fernet](https://cryptography.io/en/latest/fernet/), and written to `.auth/state.enc`. The key is generated on first run and stored in the OS keychain, so the file is useless if copied to another machine. Before each run the tool checks the session with `/d2l/api/lp/{version}/users/whoami`.
-- **API access**: API versions are discovered at startup from `/d2l/api/versions/`. Requests run one at a time and are retried up to 3 times on network errors, 429, and 5xx. An expired session answers with the same 403 as hidden content, so on a 403 the tool checks `whoami` to tell the two apart before asking you to log in again.
+- **API access**: API versions are discovered at startup from `/d2l/api/versions/`. All requests go through [httpx](https://www.python-httpx.org/) with the login cookies, in parallel: courses, categories, and the items inside them are crawled at the same time, and files download at the same time, never more requests in flight than the profile allows. Everything is retried up to 3 times on network errors, 429, and 5xx. An expired session answers with the same 403 as hidden content, so on a 403 the tool checks `whoami` to tell the two apart before asking you to log in again.
 - **Crawl**: for each course and category the tool walks the relevant endpoints (content table of contents, dropbox folders and your submissions, forum topics and posts, news, grades, quizzes, calendar). HTML content pages are fetched during the crawl, and every page and piece of rich text is scanned for the Brightspace files it references; each one's size is checked with a `HEAD` request. The crawl keeps every file's download URL and the raw JSON, so the download step doesn't crawl again.
-- **Download**: each file is written to a `.part` file first and renamed when complete. Names are made safe for Windows, macOS, and Linux, duplicates get ` (2)`, and paths are kept under Windows' 260-character limit where possible. The same crawl always produces the same paths, which is how a re-run recognises what it already has.
+- **Download**: files are streamed to a `.part` file and renamed when complete; if the session expires, files still waiting are held until you've logged in again. Names are made safe for Windows, macOS, and Linux, duplicates get ` (2)`, and paths are kept under Windows' 260-character limit where possible. The same crawl always produces the same paths, which is how a re-run recognises what it already has.
 - **Pages**: generated after the files, so links know what's on disk. Embedded files are read from `_course-files/_assets/` and inlined as `data:` URIs, `<style>`, and `<script>`. Brightspace quickLinks are resolved offline by matching their `rcode` to the `ActivityId` of the crawled assignments, quizzes, discussion topics, and content topics.
 
 ## Project layout

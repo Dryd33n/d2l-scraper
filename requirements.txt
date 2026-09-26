@@ -4,3 +4,4 @@ cryptography
 questionary
 rich
 markdownify
+httpx

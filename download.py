@@ -6,6 +6,8 @@ download. JSON, exports, and pages are always rewritten.
 
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -232,23 +234,6 @@ def _already_have(job: Job) -> bool:
     return size == job.file.size if job.file.size is not None else size > 0
 
 
-def _fetch(p: Playwright, session: Session, job: Job, progress: Progress) -> bytes:
-    """Fetch a file, pausing for a browser re-login whenever the session turns out to have expired."""
-    while True:
-        try:
-            return session.fetch(job.file.url)
-        except SessionExpired:
-            pass
-        except ApiError as e:
-            # an expired session answers 403, the same as hidden content; whoami tells them apart
-            if e.status != 403 or session.is_valid():
-                raise
-        progress.stop()
-        warn("Your Brightspace session expired. Log in again in the browser to continue.")
-        relogin(p, session)
-        progress.start()
-
-
 def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options: DownloadOptions,
              started: datetime | None = None) -> Summary:
     """Write metadata, download files, write pages, then append this run to the logs. The logs are
@@ -295,7 +280,42 @@ def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options
     return summary
 
 
+class _Stopped(Exception):
+    """Raised inside a worker's download to abandon it when the run is stopping."""
+
+
+def _fetch_one(session: Session, job: Job, expired: threading.Event, advance) -> tuple[str, int | str | None]:
+    """Download one file on a worker thread: ("ok", size), ("failed", reason), or ("expired", None)
+    when the session has expired (then no worker starts another file until the main thread re-logs in)."""
+    if expired.is_set():
+        return "expired", None
+    job.dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = job.dest.with_name(job.dest.name + ".part")
+    try:
+        if job.file.data is not None:
+            partial.write_bytes(job.file.data)
+            advance(len(job.file.data))
+            size = len(job.file.data)
+        else:
+            size = session.download_to(job.file.url, partial, advance)
+        partial.replace(job.dest)  # never leave a half-written file under the real name
+        return "ok", size
+    except SessionExpired:
+        expired.set()
+        return "expired", None
+    except ApiError as e:
+        # an expired session answers 403, the same as hidden content; whoami tells them apart
+        if e.status == 403 and not session.is_valid():
+            expired.set()
+            return "expired", None
+        return "failed", f"{type(e).__name__}: {e}"
+    except Exception as e:
+        return "failed", f"{type(e).__name__}: {e}"
+
+
 def _download_files(p: Playwright, session: Session, todo: list[Job], summary: Summary) -> None:
+    """Download files in parallel (the session's `workers`). If the session expires, the files still waiting are held
+    back, you log in again in the browser (which only works on this thread), and they carry on."""
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -306,17 +326,43 @@ def _download_files(p: Playwright, session: Session, todo: list[Job], summary: S
         transient=True,
     ) as progress:
         task = progress.add_task("Downloading", total=sum(j.file.size or 0 for j in todo))
-        for job in todo:
-            progress.update(task, description=escape(f"{job.crawl.course.short_name} · {job.dest.name}"))
+        stop = threading.Event()
+
+        def advance(n: int) -> None:  # called by workers for every chunk
+            if stop.is_set():
+                raise _Stopped()
+            progress.advance(task, n)
+
+        done, queue, order = 0, list(todo), {id(job): i for i, job in enumerate(todo)}
+        while queue:
+            expired, held = threading.Event(), []
+            pool = ThreadPoolExecutor(session.workers)
             try:
-                data = job.file.data if job.file.data is not None else _fetch(p, session, job, progress)
-                job.dest.parent.mkdir(parents=True, exist_ok=True)
-                partial = job.dest.with_name(job.dest.name + ".part")
-                partial.write_bytes(data)
-                partial.replace(job.dest)  # never leave a half-written file under the real name
-                summary.course(job.crawl).downloaded.append((job.dest, len(data)))
-            except SessionExpired:
-                raise  # re-login itself failed; nothing sensible to continue with
-            except Exception as e:
-                summary.fail(job.dest, f"{type(e).__name__}: {e}")
-            progress.advance(task, job.file.size or 0)
+                futures = {pool.submit(_fetch_one, session, job, expired, advance): job for job in queue}
+                for future in as_completed(futures):
+                    job = futures[future]
+                    outcome, value = future.result()
+                    if outcome == "expired":
+                        held.append(job)
+                        continue
+                    done += 1
+                    if outcome == "ok":
+                        summary.course(job.crawl).downloaded.append((job.dest, value))
+                        if job.file.size is None:  # not in the total yet
+                            progress.update(task, total=progress.tasks[0].total + value)
+                    else:
+                        summary.fail(job.dest, value)
+                    label = f"{done}/{len(todo)} files · {job.crawl.course.short_name} · {job.dest.name}"
+                    progress.update(task, description=escape(label))
+            except BaseException:  # Ctrl+C or an error: don't wait for every queued file
+                stop.set()
+                expired.set()  # workers that haven't started yet return straight away
+                raise
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+            if held:
+                progress.stop()
+                warn("Your Brightspace session expired. Log in again in the browser to continue.")
+                relogin(p, session)  # raises SessionExpired if the login fails; the run then stops
+                progress.start()
+            queue = sorted(held, key=lambda job: order[id(job)])

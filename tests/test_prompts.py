@@ -88,3 +88,24 @@ with sync_playwright():  # main.py prompts while Playwright's loop is running
               run_opts(ENTER + ENTER + CLEAR + str(prompts.DEFAULT_OUTPUT / "Fall 2026") + ENTER, with_videos).output,
               (prompts.DEFAULT_OUTPUT / "Fall 2026").resolve())
     check_cat("default is the repo's D2L Archive folder", prompts.DEFAULT_OUTPUT, prompts.PROJECT_DIR / "D2L Archive")
+
+# scraping profile
+real_select = questionary.select
+
+def run_profile(keys):
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        prompts.questionary.select = functools.partial(real_select, input=inp, output=DummyOutput())
+        try:
+            return prompts.select_profile()
+        finally:
+            prompts.questionary.select = real_select
+
+def check_value(name, got, want):
+    print("PASS" if got == want else f"FAIL (got {got!r})", name)
+
+with sync_playwright():
+    check_value("profile: enter keeps the default (fair)", run_profile(ENTER), "fair")
+    check_value("profile: down picks aggressive", run_profile(DOWN + ENTER), "aggressive")
+    check_value("profile: up picks polite", run_profile("\x1b[A" + ENTER), "polite")
+    check_value("profile: ctrl-c cancels", run_profile("\x03"), None)

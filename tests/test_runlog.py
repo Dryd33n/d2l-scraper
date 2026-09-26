@@ -24,6 +24,11 @@ class FakeSession:
         if isinstance(step, Exception):
             raise step
         return step
+    def download_to(self, path, dest, on_bytes=None):  # the thread-safe path downloads use
+        data = self.fetch(path)
+        dest.write_bytes(data)
+        return len(data)
+    workers = 4
     def is_valid(self):
         return True
 

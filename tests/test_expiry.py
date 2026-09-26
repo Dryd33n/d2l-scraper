@@ -21,6 +21,11 @@ class FakeSession:
         if isinstance(step, Exception):
             raise step
         return step
+    def download_to(self, path, dest, on_bytes=None):  # the thread-safe path downloads use
+        data = self.fetch(path)
+        dest.write_bytes(data)
+        return len(data)
+    workers = 4
     def is_valid(self):
         return self.valid
 
@@ -51,3 +56,29 @@ check("403 with live session -> hidden file, recorded as failure, no relogin", (
 
 summary, s, n, _ = run([ApiError("/x", 404)], True)
 check("404 -> failure, no relogin", (len(summary.failed), n), (1, 0))
+
+# parallel: one file finds the session expired; the rest are held, one re-login, then all finish
+import threading
+class ParallelSession(FakeSession):
+    def __init__(self):
+        super().__init__([], False)
+        self.lock = threading.Lock()
+        self.expired_once = False
+        self.valid = True
+    def fetch(self, url):
+        with self.lock:
+            self.fetches += 1
+            if url == "/f3" and not self.expired_once:
+                self.expired_once = True
+                raise SessionExpired("x")
+        return url.encode()
+
+relogins.clear()
+out = Path(tempfile.mkdtemp())
+files = [RemoteFile(("attachments",), f"f{i}.pdf", f"/f{i}", 3) for i in range(12)]
+crawls = [CourseCrawl(course, {"announcements": CategoryResult(files=files, data={})})]
+s = ParallelSession()
+summary = download.download(None, s, crawls, DownloadOptions(False, [], out))
+got = sorted(p.name for p in (out / "Spring 2025 TEST 100/announcements/attachments").iterdir())
+check("parallel: every file downloaded after one re-login", (summary.downloaded, len(relogins), len(got), summary.failed), (12, 1, 12, []))
+check("parallel: no .part files left", [n for n in got if n.endswith(".part")], [])

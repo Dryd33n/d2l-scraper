@@ -168,23 +168,43 @@ def _content(s: Session, course: Course, status: Status) -> CategoryResult:
     if broken:
         r.note += f" · {plural(broken, 'broken file')}"
 
-    for i, (path, t) in enumerate(file_topics, 1):
-        url = f"/d2l/api/le/{le}/{ou}/content/topics/{t['TopicId']}/file"
-        name = PurePosixPath(unquote(t["Url"])).name or t["Title"]
-        if PurePosixPath(name.lower()).suffix in HTML_EXTENSIONS:
-            # fetched now so the course files step can find what the page references; the download
-            # writes a self-contained copy here and keeps this original under _course-files/_originals
-            status(f"pages {i}/{len(file_topics)}")
-            try:
-                html = s.fetch(url)
-            except ApiError:
-                r.files.append(RemoteFile(path, name, url, None))  # let the download report the failure
-                continue
-            r.html_pages.append(HtmlPage(t["TopicId"], path, name, url, BASE_URL + quote(unquote(t["Url"]), safe="/()!$'*+,;=:@-._~&"), html))
+    url = lambda t: f"/d2l/api/le/{le}/{ou}/content/topics/{t['TopicId']}/file"
+
+    # HTML pages are fetched now so the course files step can find what they reference; the download
+    # writes a self-contained copy in the module folder and keeps this original under _course-files/_originals
+    def fetch_page(t):
+        try:
+            return s.fetch(url(t))
+        except ApiError:
+            return None  # listed as a plain file below, so the download reports the failure
+
+    pages = [t for _, t in file_topics if _is_html(t)]
+    fetched = dict(zip((t["TopicId"] for t in pages), s.map(fetch_page, pages, lambda n: status(f"pages {n}/{len(pages)}"))))
+
+    files = []  # (RemoteFile, needs a size check), in topic order so paths stay the same run to run
+    for path, t in file_topics:
+        name = _topic_file_name(t)
+        html = fetched.get(t["TopicId"])
+        if html is not None:
+            base = BASE_URL + quote(unquote(t["Url"]), safe="/()!$'*+,;=:@-._~&")
+            r.html_pages.append(HtmlPage(t["TopicId"], path, name, url(t), base, html))
         else:
-            status(f"file sizes {i}/{len(file_topics)}")
-            r.files.append(RemoteFile(path, name, url, s.head_size(url)))
+            files.append((RemoteFile(path, name, url(t), None), not _is_html(t)))
+
+    to_check = [f for f, check in files if check]
+    heads = s.head_many([f.url for f in to_check], lambda n: status(f"file sizes {n}/{len(to_check)}"))
+    for f, (_, size, _) in zip(to_check, heads):
+        f.size = size
+    r.files = [f for f, _ in files]
     return r
+
+
+def _topic_file_name(topic: dict) -> str:
+    return PurePosixPath(unquote(topic["Url"])).name or topic["Title"]
+
+
+def _is_html(topic: dict) -> bool:
+    return PurePosixPath(_topic_file_name(topic).lower()).suffix in HTML_EXTENSIONS
 
 
 def walk_toc(modules: list[dict], path: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], dict]]:
@@ -199,10 +219,10 @@ def walk_toc(modules: list[dict], path: tuple[str, ...] = ()) -> Iterator[tuple[
 def _classlist(s: Session, course: Course, status: Status) -> CategoryResult:
     ou = course.id
     people = s.get_json(f"/d2l/api/le/{{le}}/{ou}/classlist/")
-    groups = []
-    for category in _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/", []):
-        category_groups = _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/{category['GroupCategoryId']}/groups/", [])
-        groups.append({"category": category, "groups": category_groups})
+    categories = _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/", [])
+    group_lists = s.map(lambda c: _optional(s, f"/d2l/api/lp/{{lp}}/{ou}/groupcategories/{c['GroupCategoryId']}/groups/", []),
+                        categories)
+    groups = [{"category": c, "groups": g} for c, g in zip(categories, group_lists)]
     r = CategoryResult(unit="person", items=len(people), data={"people": people, "groups": groups})
     if groups:
         r.note = plural(len(groups), "group category")
@@ -211,16 +231,16 @@ def _classlist(s: Session, course: Course, status: Status) -> CategoryResult:
 
 def _grades(s: Session, course: Course, status: Status) -> CategoryResult:
     ou = course.id
-    values = s.get_json(f"/d2l/api/le/{{le}}/{ou}/grades/values/myGradeValues/")
-    data = {
-        "values": values,
-        "items": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/", []),  # max points, weights, categories
-        "categories": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/categories/", []),
-        "final": _optional(s, f"/d2l/api/le/{{le}}/{ou}/grades/final/values/myGradeValue"),  # 404 until released
-    }
-    items = [g for g in values if g["GradeObjectTypeName"] != "Category"]
-    r = CategoryResult(unit="grade item", items=len(items), data=data)
-    if data["final"]:
+    base = f"/d2l/api/le/{{le}}/{ou}/grades"
+    values, items, categories, final = s.map(lambda fetch: fetch(), [
+        lambda: s.get_json(f"{base}/values/myGradeValues/"),
+        lambda: _optional(s, f"{base}/", []),  # max points, weights, categories
+        lambda: _optional(s, f"{base}/categories/", []),
+        lambda: _optional(s, f"{base}/final/values/myGradeValue"),  # 404 until released
+    ])
+    data = {"values": values, "items": items, "categories": categories, "final": final}
+    r = CategoryResult(unit="grade item", items=sum(g["GradeObjectTypeName"] != "Category" for g in values), data=data)
+    if final:
         r.note = "final grade released"
     return r
 
@@ -228,37 +248,39 @@ def _grades(s: Session, course: Course, status: Status) -> CategoryResult:
 def _discussions(s: Session, course: Course, status: Status) -> CategoryResult:
     base = f"/d2l/api/le/{s.versions['le']}/{course.id}/discussions/forums"
     r = CategoryResult(unit="post", data=[])
-    n_topics = 0
-    failed_topics = 0
 
     forums = s.get_json(f"{base}/")
-    for forum in forums:
-        fid = forum["ForumId"]
-        topics = []
-        for topic in s.get_json(f"{base}/{fid}/topics/"):
-            tid = topic["TopicId"]
-            status(f"{forum['Name']} › {topic['Name']}")
-            try:
-                posts = s.get_json(f"{base}/{fid}/topics/{tid}/posts/")
-            except ApiError as e:
-                # some topics fail server-side (HTTP 500) on every attempt; keep the rest of the forum
-                failed_topics += 1
-                topics.append({"topic": topic, "posts": [], "error": f"HTTP {e.status}"})
-                continue
-            r.items += len(posts)
-            for post in posts:
-                for a in post["Attachments"]:
-                    url = f"{base}/{fid}/topics/{tid}/posts/{post['PostId']}/attachments/{a['FileId']}"
-                    path = (forum["Name"], topic["Name"], "attachments")
-                    r.files.append(RemoteFile(path, a["FileName"], url, a["Size"]))
-            topics.append({"topic": topic, "posts": posts})
-        n_topics += len(topics)
-        r.data.append({"forum": forum, "topics": topics})
+    topic_lists = s.map(lambda forum: s.get_json(f"{base}/{forum['ForumId']}/topics/"), forums)
+    pairs = [(forum, topic) for forum, topics in zip(forums, topic_lists) for topic in topics]
+
+    def posts(pair):
+        forum, topic = pair
+        try:
+            return s.get_json(f"{base}/{forum['ForumId']}/topics/{topic['TopicId']}/posts/"), None
+        except ApiError as e:
+            # some topics fail server-side (HTTP 500) on every attempt; keep the rest of the forum
+            return [], f"HTTP {e.status}"
+
+    fetched = s.map(posts, pairs, lambda n: status(f"topics {n}/{len(pairs)}"))
+    by_forum = {id(forum): {"forum": forum, "topics": []} for forum in forums}
+    for (forum, topic), (topic_posts, error) in zip(pairs, fetched):
+        fid, tid = forum["ForumId"], topic["TopicId"]
+        entry = {"topic": topic, "posts": topic_posts}
+        if error:
+            entry["error"] = error
+        by_forum[id(forum)]["topics"].append(entry)
+        r.items += len(topic_posts)
+        for post in topic_posts:
+            for a in post["Attachments"]:
+                url = f"{base}/{fid}/topics/{tid}/posts/{post['PostId']}/attachments/{a['FileId']}"
+                r.files.append(RemoteFile((forum["Name"], topic["Name"], "attachments"), a["FileName"], url, a["Size"]))
+    r.data = list(by_forum.values())
 
     if forums:
-        r.note = f"{plural(len(forums), 'forum')} · {plural(n_topics, 'topic')}"
-    if failed_topics:
-        r.note += f" · {plural(failed_topics, 'topic')} failed"
+        r.note = f"{plural(len(forums), 'forum')} · {plural(len(pairs), 'topic')}"
+    failed = sum(1 for _, error in fetched if error)
+    if failed:
+        r.note += f" · {plural(failed, 'topic')} failed"
     return r
 
 
@@ -269,15 +291,14 @@ def _assignments(s: Session, course: Course, status: Status) -> CategoryResult:
 
     folders = s.get_json(f"{base}/")
     r.items = len(folders)
-    for folder in folders:
+    submissions = s.map(lambda folder: s.get_json(f"{base}/{folder['Id']}/submissions/mysubmissions/"), folders,
+                        lambda n: status(f"assignments {n}/{len(folders)}"))
+    for folder, mine in zip(folders, submissions):
         fid, name = folder["Id"], folder["Name"]
-        status(name)
         r.links += len(folder["LinkAttachments"])
         for a in folder["Attachments"]:
             url = f"{base}/{fid}/attachments/{a['FileId']}"
             r.files.append(RemoteFile((name, "attachments"), a["FileName"], url, a["Size"]))
-
-        mine = s.get_json(f"{base}/{fid}/submissions/mysubmissions/")
         for entity in mine:
             for sub in entity["Submissions"]:
                 n_submissions += 1
@@ -363,28 +384,43 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
             for text in _strings(result.data):
                 add(html_refs(text, None))  # rich text: relative references can't be resolved
 
-    queue = list(wanted.items())
-    for i, (key, embedded) in enumerate(queue):  # stylesheets append what they reference while this runs
-        status(f"linked files {i + 1}/{len(queue)}")
-        exists, size, headers = s.head(key)
-        if not exists:
-            r.missing.append(key)
-            continue
-        folder, name = local_folder(key, embedded)
-        if post_image := view_attachment(key):
-            name = _filename_from_headers(headers, f"image-{post_image[2]}")
-        data = None
-        if embedded and ("text/css" in headers.get("content-type", "") or name.lower().endswith(".css")):
+    # size checks run in parallel; stylesheets are fetched to find the fonts and images they use,
+    # which are checked in the next round
+    queue, checked = list(wanted.items()), 0
+    while queue:
+        heads = s.head_many([key for key, _ in queue], lambda n: status(f"linked files {checked + n}/{len(wanted)}"))
+        checked += len(queue)
+        is_css = lambda key, embedded, headers: embedded and (
+            "text/css" in headers.get("content-type", "") or key.partition("?")[0].lower().endswith(".css"))
+        stylesheets = [key for (key, embedded), (exists, _, headers) in zip(queue, heads) if exists and is_css(key, embedded, headers)]
+
+        def fetch_css(key):
             try:
-                data = s.fetch(key)  # fetched now to find the fonts and images it uses
+                return s.fetch(key)
             except ApiError:
+                return None
+        css = dict(zip(stylesheets, s.map(fetch_css, stylesheets)))
+
+        next_round = []
+        for (key, embedded), (exists, size, headers) in zip(queue, heads):
+            if not exists:
                 r.missing.append(key)
                 continue
-            for ref in css_refs(decode(data), BASE_URL + key):
-                if (k := canonical(ref.url)) and k not in wanted:
-                    wanted[k] = True
-                    queue.append((k, True))
-        r.files.append(RemoteFile(folder, name, key, len(data) if data is not None else size, data))
+            folder, name = local_folder(key, embedded)
+            if post_image := view_attachment(key):
+                name = _filename_from_headers(headers, f"image-{post_image[2]}")
+            data = None
+            if key in css:
+                data = css[key]
+                if data is None:
+                    r.missing.append(key)
+                    continue
+                for ref in css_refs(decode(data), BASE_URL + key):
+                    if (k := canonical(ref.url)) and k not in wanted:
+                        wanted[k] = True
+                        next_round.append((k, True))
+            r.files.append(RemoteFile(folder, name, key, len(data) if data is not None else size, data))
+        queue = next_round
 
     r.items = len(r.files)
     notes = [plural(len(html_pages), "HTML page")] if html_pages else []
@@ -425,9 +461,10 @@ def crawl_category(session: Session, course: Course, key: str, status: Status,
 
 
 def crawl(session: Session, courses: list[Course], categories: list[str]) -> list[CourseCrawl]:
-    """Crawl course info, every selected category, and the files they link to, for every selected course."""
-    keys = [COURSE_INFO, *categories, COURSE_FILES]
-    crawls = []
+    """Crawl course info, every selected category, and the files they link to, for every selected course.
+    All courses' categories are crawled at once, then each course's linked files (which need the rest);
+    the session limits how many requests are in flight."""
+    keys = [COURSE_INFO, *categories]
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -436,14 +473,21 @@ def crawl(session: Session, courses: list[Course], categories: list[str]) -> lis
         console=console,
         transient=True,
     ) as progress:
-        task = progress.add_task("Crawling", total=len(courses) * len(keys))
-        for course in courses:
-            results = {}
-            for key in keys:
-                label = escape(f"{course.short_name} · {LABELS[key]}")
-                progress.update(task, description=label)
-                status = lambda text: progress.update(task, description=f"{label} [dim]{escape(text)}[/]")
-                results[key] = crawl_category(session, course, key, status, results)
-                progress.advance(task)
-            crawls.append(CourseCrawl(course, results))
+        task = progress.add_task("Crawling", total=len(courses) * (len(keys) + 1))
+
+        def run(course: Course, key: str, results: dict | None = None) -> CategoryResult:
+            label = escape(f"{course.short_name} · {LABELS[key]}")
+            progress.update(task, description=label)
+            status = lambda text: progress.update(task, description=f"{label} [dim]{escape(text)}[/]")
+            result = crawl_category(session, course, key, status, results)
+            progress.advance(task)
+            return result
+
+        pairs = [(course, key) for course in courses for key in keys]
+        found = session.map(lambda pair: run(*pair), pairs)
+        crawls = [CourseCrawl(course, {key: found[i * len(keys) + j] for j, key in enumerate(keys)})
+                  for i, course in enumerate(courses)]
+        linked = session.map(lambda c: run(c.course, COURSE_FILES, c.results), crawls)
+        for c, result in zip(crawls, linked):
+            c.results[COURSE_FILES] = result
     return crawls

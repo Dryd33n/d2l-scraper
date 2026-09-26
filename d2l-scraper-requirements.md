@@ -62,7 +62,7 @@ UVic only for now, we will attempt to implement any D2L instance later
 **Approach:** Read-only calls to the D2L Valence JSON API using session cookies. No HTML scraping unless an endpoint doesn't exist.
 
 - [x] Resolve API versions at startup with `/d2l/api/versions/` (currently `lp` 1.63, `le` 1.99)
-- [x] Rate limit: sequential requests, one at a time, no extra delay
+- [x] Rate limit: a **scraping profile** chosen right after login sets how many requests are in flight at once: Polite 3, Fair 6 (default), Aggressive 12 (`PROFILES` in `auth.py`); every profile is parallel. One semaphore in `Session` enforces it across every thread, so nested parallel work (courses × categories × topics) never exceeds it. No extra delay; 429/5xx are retried with back-off. The profile is written in the logs. Changed 2026-09-26 from fully sequential. Measured on 3 real courses: crawl 75s sequential → 31s Polite, 15s Fair, 12s Aggressive (identical results); full download without videos (470 MB) 35s Polite, 20s Fair, 20s Aggressive (connection-bound)
 - [x] Retry policy: up to 3 retries on network errors, 429, and 5xx, waiting 1s, 2s, 4s
 - [x] Handling of 403s (hidden or unreleased content): the crawl records the category as "not available" and continues
 
@@ -356,7 +356,7 @@ DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plu
 ## 8. Tech Stack
 
 - Language: Python (3.10+)
-- Auth / HTTP: Playwright (`sync_playwright`, `request.new_context`)
+- Auth / HTTP: Playwright (`sync_playwright`) only for the browser login; every request goes through one `httpx` client built from the saved cookies (thread-safe, rebuilt on re-login), files streamed to disk
 - Session encryption: `cryptography` (Fernet) + `keyring`
 - Selection UI: `questionary` (prompts run on a worker thread because `sync_playwright` owns the main thread's event loop)
 - Display: `rich` (spinners, progress, review box rendered into a `prompt_toolkit` app)
@@ -375,4 +375,3 @@ DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plu
 ## 10. Open Questions
 
 - Session re-check interval and pause/re-login during downloads (section 2)
-- Rate limit and retry policy (section 3)
