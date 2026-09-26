@@ -84,6 +84,17 @@ class Session:
             raise SessionExpired(f"GET {path}: HTTP {resp.status}")
         raise ApiError(path, resp.status)
 
+    def head(self, path: str) -> tuple[bool, int | None, dict[str, str]]:
+        """HEAD a file: (exists, size or None if not reported, response headers)."""
+        resp = self.api.head(path, max_redirects=0)
+        length = resp.headers.get("content-length")
+        size = int(length) if resp.ok and length and length.isdigit() else None
+        return resp.ok, size, resp.headers
+
+    def head_size(self, path: str) -> int | None:
+        """Return a file's size from a HEAD request, or None if the server doesn't report one."""
+        return self.head(path)[1]
+
 
 def _open_session(p: Playwright) -> Session | None:
     """Build a Session from the saved state, or return None if it is missing or no longer valid."""

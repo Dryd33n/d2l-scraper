@@ -1,7 +1,7 @@
 """List the user's course enrollments, grouped by term."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import groupby
 
 from playwright.sync_api import sync_playwright
@@ -19,6 +19,7 @@ class Course:
     name: str
     can_access: bool
     term: str | None  # "202609", or None for non-term org units (advising, makerspace, ...)
+    enrollment: dict = field(default_factory=dict, repr=False)  # raw enrollment JSON, saved as course.json
 
     @property
     def term_label(self) -> str:
@@ -51,6 +52,7 @@ def list_courses(session: Session) -> list[Course]:
                 name=org["Name"],
                 can_access=access["CanAccess"],
                 term=term.group(1) if term else None,
+                enrollment=item,
             ))
 
         if not page["PagingInfo"]["HasMoreItems"]:

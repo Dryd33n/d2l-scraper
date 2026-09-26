@@ -1,47 +1,72 @@
 """Interactive terminal prompts for choosing what to archive."""
 
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import questionary
 
 from courses import Course, by_term
-from ui import PROMPT_STYLE
+from crawl import CATEGORIES, COURSE_INFO, CourseCrawl, total_size
+from ui import PROMPT_STYLE, format_size, in_thread, plural
 
+INSTRUCTION = "(space toggle · a all · enter confirm)"
 
-def _ask(question: questionary.Question):
-    """Run a prompt on its own thread.
-
-    sync_playwright keeps an asyncio loop running on the main thread, and questionary
-    (prompt_toolkit) refuses to start its own loop there. A worker thread has no loop.
-    """
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(question.ask).result()
-
-
-CATEGORIES = {
-    "content": "Content",
-    "classlist": "Classlist",
-    "grades": "Grades",
-    "discussions": "Discussions",
-    "assignments": "Assignments",
-    "quizzes": "Quizzes",
+# Generated pages that can get a Markdown copy. Downloaded files are never converted.
+MARKDOWN_KINDS = {
+    "content": "Content pages (HTML topics)",
     "announcements": "Announcements",
+    "assignments": "Assignments",
+    "discussions": "Discussions",
+    "quizzes": "Quizzes",
+    "grades": "Grades",
+    COURSE_INFO: "Course info",
 }
 
 
-INSTRUCTION = "(space toggle · a all · enter confirm)"
+@dataclass
+class DownloadOptions:
+    videos: bool
+    markdown: list[str]  # keys of MARKDOWN_KINDS to also save as .md
 
 
 def select_categories() -> list[str] | None:
     """Show a checkbox list of content categories, all checked. Returns keys, or None if cancelled."""
-    return _ask(questionary.checkbox(
+    return in_thread(questionary.checkbox(
         "What should be downloaded?",
         choices=[questionary.Choice(title=label, value=key, checked=True)
                  for key, label in CATEGORIES.items()],
         instruction=INSTRUCTION,
         validate=lambda picked: bool(picked) or "Select at least one category",
         style=PROMPT_STYLE,
-    ))
+    ).ask)
+
+
+def select_download_options(crawls: list[CourseCrawl]) -> DownloadOptions | None:
+    """Ask whether to download videos and which generated pages to also save as Markdown.
+
+    The video question is skipped when the crawl found no videos. Returns None if the user cancels.
+    """
+    videos = [f for c in crawls for r in c.results.values() if r.error is None for f in r.files if f.is_video]
+    include_videos = False
+    if videos:
+        include_videos = in_thread(questionary.confirm(
+            f"Download videos? ({plural(len(videos), 'video')}, {format_size(total_size(videos))})",
+            default=False,
+            style=PROMPT_STYLE,
+        ).ask)
+        if include_videos is None:
+            return None
+
+    crawled = set(crawls[0].results)
+    markdown = in_thread(questionary.checkbox(
+        "Also save Markdown copies of:",
+        choices=[questionary.Choice(title=label, value=key)
+                 for key, label in MARKDOWN_KINDS.items() if key in crawled],
+        instruction="(space toggle · a all · enter confirm, none is fine)",
+        style=PROMPT_STYLE,
+    ).ask)
+    if markdown is None:
+        return None
+    return DownloadOptions(videos=include_videos, markdown=markdown)
 
 
 def select_courses(courses: list[Course]) -> list[Course] | None:
@@ -58,10 +83,10 @@ def select_courses(courses: list[Course]) -> list[Course] | None:
                 disabled=None if c.can_access else "no access",
             ))
 
-    return _ask(questionary.checkbox(
+    return in_thread(questionary.checkbox(
         "Which courses should be archived?",
         choices=choices,
         instruction=INSTRUCTION,
         validate=lambda picked: bool(picked) or "Select at least one course",
         style=PROMPT_STYLE,
-    ))
+    ).ask)

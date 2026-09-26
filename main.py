@@ -1,13 +1,14 @@
-"""D2L scraper entry point: log in, pick courses and categories."""
+"""D2L scraper entry point: log in, pick courses and categories, crawl, review, choose download options."""
 
 import sys
 
 from playwright.sync_api import sync_playwright
-from rich.table import Table
 
 from auth import BASE_URL, connect
 from courses import list_courses
-from prompts import CATEGORIES, select_categories, select_courses
+from crawl import crawl
+from prompts import MARKDOWN_KINDS, select_categories, select_courses, select_download_options
+from review import review
 from ui import ACCENT, console, ok, warn
 
 
@@ -33,16 +34,26 @@ def main() -> None:
             warn("Cancelled.")
             sys.exit(1)
 
-        table = Table(title="Selection", title_style="bold", header_style=f"bold {ACCENT}")
-        table.add_column("Term")
-        table.add_column("Course")
-        table.add_column("ID", justify="right", style="dim")
-        for c in selected:
-            table.add_row(c.term_label, c.short_name, str(c.id))
+        console.print()
+        crawls = crawl(session, selected, categories)
+        ok(f"Crawled {len(selected)} course{'s' if len(selected) > 1 else ''}")
+        console.print()
+
+        if not review(crawls):
+            warn("Cancelled, nothing downloaded.")
+            sys.exit(1)
 
         console.print()
-        console.print(table)
-        console.print(f"[bold]Categories:[/] {', '.join(CATEGORIES[k] for k in categories)}")
+        options = select_download_options(crawls)
+        if options is None:
+            warn("Cancelled, nothing downloaded.")
+            sys.exit(1)
+
+        console.print()
+        ok(f"Videos: {'included' if options.videos else 'skipped (recorded as links)'}")
+        markdown = ", ".join(MARKDOWN_KINDS[k] for k in options.markdown) or "none"
+        ok(f"Markdown copies: {markdown}")
+        warn("Downloading isn't implemented yet.")
 
 
 if __name__ == "__main__":
