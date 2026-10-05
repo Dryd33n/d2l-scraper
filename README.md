@@ -1,8 +1,8 @@
 # D2L Scraper
 
-A command-line tool for archiving your own course data from a D2L Brightspace instance before you lose access to it. You log in through a normal browser window, pick the courses and kinds of content you want, review exactly what will be downloaded, and the tool fetches it through D2L's read-only Valence API.
+A command-line tool for archiving your own course data from a D2L Brightspace instance before you lose access to it, and for turning it into study material. You log in through a normal browser window, pick the courses and kinds of content you want, review exactly what will be downloaded, and the tool fetches it through D2L's read-only Valence API (plus the quiz review pages you can already see, which the API doesn't offer).
 
-The result is a folder per course that works offline: every file in its original format, readable HTML pages for announcements, assignments, discussions, grades, and the rest, spreadsheets and a calendar you can import, and the raw API data underneath it all.
+The result is a folder per course that works offline: every file in its original format, readable HTML pages for announcements, assignments, discussions, quiz attempts, grades, and the rest, spreadsheets and a calendar you can import, and the raw API data underneath it all. Optionally, each course also gets a study pack: a ready-to-upload set of sources for a [NotebookLM](https://notebooklm.google.com) notebook.
 
 Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
 
@@ -14,8 +14,8 @@ Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
 - **Review before downloading**: every selected course is crawled first and summarised: items, files, and sizes per category, with videos counted separately. Nothing is downloaded until you confirm.
 - **Your quiz attempts**: every attempt you submitted, with the questions, your answers, the right answers, and feedback, as far as each quiz lets students review them. The API doesn't allow this, so the tool reads the same review pages you see in Brightspace (never a page that starts a quiz).
 - **Readable offline pages**: announcements, assignments (instructions, rubric, your submissions, feedback), discussion threads, quizzes, grades, and course info become clean HTML pages. Course content pages are saved self-contained, with images, styles, and scripts embedded, and links between Brightspace items point at the archived copies.
-- **Optional Markdown**: any kind of generated page can also be saved as `.md`.
-- **Study packs for NotebookLM**: for the courses you pick, a folder of at most 45 sources to drop into a [NotebookLM](https://notebooklm.google.com) notebook: lecture files in their own format, the course overview, assignments, discussions, and every quiz question you've seen with its answer.
+- **Optional Markdown**: any kind of generated page can also be saved as `.md`, with formulas as LaTeX.
+- **Study packs for NotebookLM**: for the courses you pick, a folder of at most 45 sources to drop into a NotebookLM notebook: lecture files in their own format, the course overview, assignments, discussions, and every quiz question you've seen, once each, with its answer. See [Study packs](#study-packs).
 - **Re-runnable**: files already in the archive are skipped, so an interrupted download resumes where it stopped.
 - **Logged**: each run is recorded in a detailed log per course and a summary for the whole archive.
 
@@ -62,22 +62,22 @@ python main.py
    │  Grades            15 grade items       0          –   final grade released      │
    │  Discussions              0 posts       0          –                             │
    │  Assignments        6 assignments      24     1.2 MB   6 submissions             │
-   │  Quizzes                   1 quiz       0          –                             │
+   │  Quizzes                   1 quiz       1    48.1 KB   1 attempt · 0 questions…  │
    │  Announcements   22 announcements       2   405.7 KB                             │
    │  Calendar                6 events       0          –                             │
    │  Linked files            50 files      11    10.6 KB   11 HTML pages             │
    │  Videos                                39     1.0 GB   optional, asked next      │
    │  ──────────────────────────────────────────────────────────────────────────────  │
-   │  Total                                102    33.3 MB   + 1.0 GB with videos      │
+   │  Total                                103    33.4 MB   + 1.0 GB with videos      │
    └────────────────────────── enter continue · esc cancel ───────────────────────────┘
    ```
 
-   "Linked files" are files that pages point to rather than list as topics: documents and videos linked from content pages, and the images, stylesheets, and scripts that get embedded into pages.
+   "Linked files" are files that pages point to rather than list as topics: documents and videos linked from content pages, and the images, stylesheets, and scripts that get embedded into pages. The quizzes row counts your attempts and the questions they show; each attempt's review page is one file.
 
 6. **Choose download options.** Whether to include videos (off by default; not asked if there are none), which kinds of generated page should also get a Markdown copy, and where to save the archive. The default is the git-ignored `D2L Archive/` folder in this repository. Other folders inside the repository are refused, since they could get committed.
-7. **Download.** A progress bar shows bytes and time remaining, then a summary of what was downloaded, skipped, and failed, and where the log is.
+7. **Download.** A progress bar shows bytes and time remaining. Then the study packs you picked are built from the archive, and a summary shows what was downloaded, skipped, and failed, each study pack's source count, and where the logs are.
 
-Run it again with the same selection to fill in anything missing: files already in the archive with the right size are skipped. Pages, JSON, and exports are rewritten every run.
+Run it again with the same selection to fill in anything missing: files already in the archive with the right size are skipped. Pages, JSON, exports, and study packs are rewritten every run.
 
 Other entry points, useful while developing:
 
@@ -96,6 +96,7 @@ Delete `.auth/state.enc`. To also remove the encryption key, delete the `d2l-scr
 ```
 D2L Archive/
   download log.txt                  summary of every run: a row per course, totals, all failures
+  Study Packs/<course>/             study packs, when picked (see below)
   Spring 2025 CSC 230 A01 - A04 X/  one folder per course, named as in Brightspace (includes the term)
     download log.txt                every run in detail: crawl counts, each file downloaded, failures
     course info/                    course.html  course.json  course-image.jpg  (+ syllabus attachment)
@@ -118,7 +119,9 @@ D2L Archive/
       discussions.json
     grades/                         grades.html  grades.csv  grades.json
     quizzes/                        quizzes.html  quizzes.json
-      Quiz 1/                       attempts.html: every attempt, question by question  _originals/attempt 1.html
+      Quiz 1/
+        attempts.html               every attempt: score, questions, your answers, right answers, feedback
+        _originals/attempt 1.html   each attempt's review page as Brightspace served it
     classlist/                      classlist.csv  classlist.json
     calendar/                       calendar.ics  calendar.json
     _course-files/
@@ -129,7 +132,9 @@ D2L Archive/
 
 ## Study packs
 
-A study pack is a folder in `D2L Archive/Study Packs/<course>/` made for a NotebookLM notebook, whose free plan takes 50 sources. Upload every file in it except `manifest.md`.
+A study pack is a folder in `D2L Archive/Study Packs/<course>/` made for a NotebookLM notebook, whose free plan takes 50 sources. Create a notebook and upload every file in the folder except `manifest.md`; NotebookLM then answers questions, quizzes you, and makes study guides from your own course material.
+
+Pick courses for a pack right after the course picker in `python main.py`, or rebuild packs from an existing archive at any time with `python studypack.py` (no login needed).
 
 ```
 Study Packs/Fall 2026 CSC 320 A01 A02 X/
@@ -142,7 +147,8 @@ Study Packs/Fall 2026 CSC 320 A01 A02 X/
   manifest.md                 what's in each source, web links to add by hand, what was left out and why
 ```
 
-- It's built from what's on disk, so earlier runs count too, and it's rebuilt from scratch each time.
+- It's built from what's on disk, so earlier runs count too, and it's rebuilt from scratch each time. A folder in `Study Packs/` that isn't a pack (no `manifest.md`) is never replaced.
+- Practice questions come from your saved quiz attempts: each question appears once even if several attempts showed it, with its choices, the correct answer worked out from Brightspace's marks, and any feedback. Your own selections aren't included. When a quiz doesn't reveal the answer, the pack says "not shown". Archives downloaded before quiz attempts were saved need a run with Quizzes ticked first.
 - PDFs, PowerPoint, Word, and images stay as they are. Videos, zip files, your own submissions, the classlist, grades, and calendar are left out.
 - To stay at 45 sources it merges PDFs (and images) module by module, biggest module first, only as far as needed; then whole top-level modules; then turns slides and Word documents into text. Anything that still doesn't fit is listed in the manifest. Courses with hundreds of MB of PDFs can take a few minutes.
 - The same file in two places is included once.
@@ -153,25 +159,27 @@ Study Packs/Fall 2026 CSC 320 A01 A02 X/
 - **API access**: API versions are discovered at startup from `/d2l/api/versions/`. All requests go through [httpx](https://www.python-httpx.org/) with the login cookies, in parallel: courses, categories, and the items inside them are crawled at the same time, and files download at the same time, never more requests in flight than the profile allows. Everything is retried up to 3 times on network errors, 429, and 5xx. An expired session answers with the same 403 as hidden content, so on a 403 the tool checks `whoami` to tell the two apart before asking you to log in again.
 - **Crawl**: for each course and category the tool walks the relevant endpoints (content table of contents, dropbox folders and your submissions, forum topics and posts, news, grades, quizzes, calendar). HTML content pages are fetched during the crawl, and every page and piece of rich text is scanned for the Brightspace files it references; each one's size is checked with a `HEAD` request. The crawl keeps every file's download URL and the raw JSON, so the download step doesn't crawl again.
 - **Download**: files are streamed to a `.part` file and renamed when complete; if the session expires, files still waiting are held until you've logged in again. Names are made safe for Windows, macOS, and Linux, duplicates get ` (2)`, and paths are kept under Windows' 260-character limit where possible. The same crawl always produces the same paths, which is how a re-run recognises what it already has.
-- **Pages**: generated after the files, so links know what's on disk. Embedded files are read from `_course-files/_assets/` and inlined as `data:` URIs, `<style>`, and `<script>`. Brightspace quickLinks are resolved offline by matching their `rcode` to the `ActivityId` of the crawled assignments, quizzes, discussion topics, and content topics.
+- **Quiz attempts**: the API refuses students their quiz questions and attempts, so for each quiz the crawl reads the submissions list and each attempt's review page, the same pages you open in Brightspace, with the same login. Only those two kinds of page are ever requested, never one that starts a quiz, so an attempt can't be started or used up. The page is parsed with BeautifulSoup: questions, your selections, the correct-answer marks, feedback, and images. How much shows depends on the quiz (every question, only wrong answers, or just the score), and the archived page says which.
+- **Pages**: generated after the files, so links know what's on disk. Embedded files are read from `_course-files/_assets/` and inlined as `data:` URIs, `<style>`, and `<script>`. Brightspace quickLinks are resolved offline by matching their `rcode` to the `ActivityId` of the crawled assignments, quizzes, discussion topics, and content topics. Markdown copies use [markdownify](https://pypi.org/project/markdownify/); MathML formulas become `$LaTeX$` from the equation editor's source.
+- **Study packs**: built offline from the archive folder. Pages become Markdown, quiz attempts become an answer key, and files are copied. To stay under the source limit, PDFs and images are merged module by module with [pypdf](https://pypi.org/project/pypdf/) and [Pillow](https://pypi.org/project/pillow/), largest module first and only as far as needed, then slide decks and Word documents are turned into text one at a time, read straight from their XML. Duplicates are found by content hash.
 
 ## Project layout
 
 ```
-main.py           Entry point: login → select → crawl → review → options → download
+main.py           Entry point: login → select → crawl → review → options → download → study packs
 auth.py           Browser login, encrypted session, API session (retries, file fetch, re-login)
 courses.py        Fetch and group course enrollments
 crawl.py          Crawl of each course/category: counts, files, sizes, raw JSON, linked files
 review.py         Review screen: counts and sizes per course, ←/→ to switch
-prompts.py        Interactive prompts: courses, categories, download options, output folder
+prompts.py        Interactive prompts: courses, study packs, categories, download options, output folder
 download.py       Output paths, raw JSON, file downloads with skip-if-present and re-login, page writing
 exports.py        grades.csv, classlist.csv, calendar.ics
 pages.py          Generated HTML pages, content outline, links page, shortcuts
 embed.py          Finding and rewriting references in Brightspace HTML (embedding, local links)
-quiz_attempts.py  Reading quiz attempt review pages: questions, answers, right answers, feedback
+quiz_attempts.py  Reading quiz attempt review pages: questions, answers, right answers, feedback, answer keys
 markdown_copy.py  Markdown copies of generated pages (formulas as LaTeX)
 runlog.py         Per-course and archive-wide download logs
-studypack.py      Study packs for NotebookLM, built from the archive on disk
+studypack.py      Study packs for NotebookLM, built from the archive on disk (also runs on its own)
 ui.py             Shared terminal styling and helpers
 tests/            Test scripts (fixtures in tests/fixtures/ are git-ignored)
 d2l-scraper-requirements.md   Design notes, content inventory, and decisions
