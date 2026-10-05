@@ -260,6 +260,9 @@ def _open_session(p: Playwright) -> Session | None:
 
     http = http_client(state)
     versions = http.get("/d2l/api/versions/")
+    if versions.status_code in (401, 403) or versions.status_code in REDIRECTS:
+        http.close()
+        return None  # an expired session is refused here too; log in again
     if not versions.is_success:
         http.close()
         raise RuntimeError(f"Could not read API versions: HTTP {versions.status_code}")
