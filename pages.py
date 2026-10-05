@@ -21,6 +21,7 @@ from auth import BASE_URL
 from crawl import COURSE_INFO, LABELS, CategoryResult, CourseCrawl, HtmlPage, walk_toc
 from markdown_copy import to_markdown
 from embed import absolute, brightspace_link, canonical, decode, is_lti, rewrite_html, view_attachment
+from quiz_attempts import Attempt, attempt_url
 from ui import format_size
 
 esc = html.escape
@@ -208,9 +209,9 @@ def note(text: str) -> str:
 
 STYLE = """
 :root { color-scheme: light dark; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --soft: #f6f8fa;
-  --accent: #0969da; --picked: #dafbe1; --warn: #fff8c5; }
+  --accent: #0969da; --picked: #dafbe1; --warn: #fff8c5; --ok: #1a7f37; --bad: #cf222e; }
 @media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --muted: #9198a1; --line: #3d444d;
-  --soft: #151b23; --accent: #4493f8; --picked: #1b3a26; --warn: #3b2e00; } }
+  --soft: #151b23; --accent: #4493f8; --picked: #1b3a26; --warn: #3b2e00; --ok: #3fb950; --bad: #f85149; } }
 * { box-sizing: border-box; }
 body { font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: Canvas;
   max-width: 54rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
@@ -254,6 +255,10 @@ td.picked { background: var(--picked); outline: 2px solid var(--accent); outline
 tr.group td { background: var(--soft); font-weight: 600; }
 tr.comment td { border-top: 0; color: var(--muted); }
 .banner { width: 100%; max-height: 14rem; object-fit: cover; border-radius: 8px; }
+.question .row { margin: .35rem 0; }
+.mark { font-size: .85rem; font-weight: 600; white-space: nowrap; }
+.mark.ok { color: var(--ok); }
+.mark.bad { color: var(--bad); }
 """
 
 
@@ -516,26 +521,60 @@ def _topic(forum: dict, entry: dict, ctx: Context) -> str:
 
 # ---------- quizzes ----------
 
-def _quizzes(quizzes: list[dict], ctx: Context) -> str:
-    out = note("Brightspace doesn't let students download quiz questions or attempts, so only quiz details are archived.")
+def _quizzes(quizzes: list[dict], attempts: dict[int, list[Attempt]], ctx: Context) -> str:
+    out = note("Questions are archived from your submitted attempts, as far as each quiz lets students review them.")
     if not quizzes:
         return out + '<p class="muted">No quizzes.</p>'
     for q in sorted(quizzes, key=lambda q: q.get("SortOrder") or 0):
         limit = q.get("SubmissionTimeLimit") or {}
-        attempts = q.get("AttemptsAllowed") or {}
-        allowed = "Unlimited" if attempts.get("IsUnlimited") else num(attempts.get("NumberOfAttemptsAllowed"))
+        allowance = q.get("AttemptsAllowed") or {}
+        allowed = "Unlimited" if allowance.get("IsUnlimited") else num(allowance.get("NumberOfAttemptsAllowed"))
         body = details([
             ("Opens", when(q.get("StartDate"))),
             ("Closes", when(q.get("EndDate"))),
             ("Due", when(q.get("DueDate"))),
             ("Time limit", f"{limit['TimeLimitValue']} minutes" if limit.get("IsEnforced") and limit.get("TimeLimitValue") else ""),
-            ("Attempts", esc(allowed)),
+            ("Attempts allowed", esc(allowed)),
+            ("Your attempts", _attempts_link(q["QuizId"], attempts.get(q["QuizId"], []), ctx)),
         ])
         for key in ("Description", "Instructions"):
             text = (q.get(key) or {}).get("Text")
             if _has_text(text):
                 body += f'<h3>{key}</h3><div class="body">{rich(text)}</div>\n'
         out += f'<article id="quiz-{q["QuizId"]}">\n<header><h2>{esc(q.get("Name") or "Untitled")}</h2></header>\n{body}</article>\n'
+    return out
+
+
+def _attempts_link(quiz_id: int, attempts: list[Attempt], ctx: Context) -> str:
+    if not attempts:
+        return ""
+    questions = sum(len(a.questions) for a in attempts)
+    label = f"{len(attempts)} attempt{'s' * (len(attempts) != 1)}"
+    if questions:
+        label += f", {questions} question{'s' * (questions != 1)}"
+    href = ctx.place(f"quizzes/{quiz_id}")
+    return f'<a href="{esc(href)}">{label}</a>' if href else esc(label)
+
+
+def _quiz_attempts(quiz: dict, attempts: list[Attempt], ctx: Context) -> str:
+    """Every attempt at one quiz: score, then each question with your answer, the right ones, and feedback."""
+    back = ctx.place(f"quizzes#quiz-{quiz['QuizId']}")
+    out = f'<p class="muted"><a href="{esc(back)}">Quiz details</a></p>\n' if back else ""
+    for a in sorted(attempts, key=lambda a: a.number):
+        body = details([("When", esc(a.written)), *((label, esc(value)) for label, value in a.scores)])
+        if a.visibility:
+            body += note(esc(a.visibility))
+        section_name = ""
+        for q in a.questions:
+            if q.section and q.section != section_name:
+                section_name = q.section
+                body += f"<h3>{esc(section_name)}</h3>\n"
+            meta = " · ".join(m for m in [esc(q.points), f'<span class="tag">{esc(q.note)}</span>' if q.note else ""] if m)
+            body += (f'<article class="question">\n<header><h3>{esc(q.label)}</h3><div class="muted">{meta}</div></header>\n'
+                     f'<div class="body">{q.html}</div>\n</article>\n')
+        original = ctx.file(attempt_url(ctx.crawl.course.id, a.quiz_id, a.attempt_id), "the page as Brightspace showed it")
+        body += f'<p class="muted">Original: {original}</p>\n'
+        out += f'<section id="attempt-{a.attempt_id}"><h2>{esc(a.title)}</h2>\n{body}</section>\n'
     return out
 
 
@@ -764,7 +803,13 @@ def pages_for(key: str, result: CategoryResult) -> list[Page]:
     if key == "announcements":
         return [Page((), "announcements.html", label, partial(_announcements, data), key="announcements")]
     if key == "quizzes":
-        return [Page((), "quizzes.html", label, partial(_quizzes, data), key="quizzes")]
+        attempts: dict[int, list[Attempt]] = {}
+        for a in result.attempts:
+            attempts.setdefault(a.quiz_id, []).append(a)
+        return [Page((), "quizzes.html", label, partial(_quizzes, data, attempts), key="quizzes"), *(
+            Page((q.get("Name") or "Untitled",), "attempts.html", q.get("Name") or "Untitled",
+                 partial(_quiz_attempts, q, attempts[q["QuizId"]]), (label,), key=f"quizzes/{q['QuizId']}")
+            for q in data if q["QuizId"] in attempts)]
     if key == "grades":
         return [Page((), "grades.html", label, partial(_grades, data), key="grades")]
     if key == "assignments":

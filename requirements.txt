@@ -5,3 +5,4 @@ questionary
 rich
 markdownify
 httpx
+beautifulsoup4

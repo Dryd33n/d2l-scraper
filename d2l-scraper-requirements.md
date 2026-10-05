@@ -1,7 +1,7 @@
 # D2L Scraper — Requirements
 
 > Status: In progress (phase 1 download built: files, raw JSON, CSV, ICS; generated HTML pages next)
-> Last updated: 2026-09-26
+> Last updated: 2026-10-05
 
 ---
 
@@ -17,7 +17,9 @@
 3. **`_course-files/` is per course** (`<course>/_course-files/`), shared by content, announcements, assignments, and discussions.
 4. **The crawl fetches HTML pages** and checks the size of each linked file; a slower crawl is fine.
 
-**Next:** all planned phases are done. Open items: sync of changed/removed items (section 6), a browsable `index.html` (section 6), any-D2L-instance support (section 1).
+**Phase 6 (2026-10-05): quiz attempts** are archived from the review pages students see (see 4.6 and 5.2).
+
+**Next:** the study pack for NotebookLM (section 11), which uses the quiz attempts. Other open items: sync of changed/removed items (section 6), a browsable `index.html` (section 6), any-D2L-instance support (section 1).
 
 **Testing notes:** `tests/fixtures/*.pkl` are crawl results pickled from real courses (git-ignored, personal data). Regenerate with `python tests/run_crawl.py tests/fixtures/with_videos.pkl 382134,504907` and `… without_videos.pkl 397411,376123,507204,293541`. The pickles predate the current grades/course-info JSON shape, so `test_pages.py` uses hand-built records; regenerate them before relying on them for new tests. Prompt tests drive questionary with `create_pipe_input`; tests run inside `sync_playwright()` because prompts must work while Playwright owns the main thread's event loop.
 
@@ -139,6 +141,16 @@ Phase 4 — DONE: Markdown copies (`markdown_copy.py`, `markdownify`)
 - Grade category rows are bold; tables (grades, rubrics, links) become Markdown tables
 - Tested live on the same three courses with every kind ticked: 75 copies, no failures
 
+Phase 6 — DONE (2026-10-05): quiz attempts (`quiz_attempts.py`)
+- The crawl fetches each quiz's submissions page and every attempt it links to. Only those two review pages are requested, never a page that starts a quiz, so an attempt can't be started or used up. The same login cookies work; no browser
+- What an attempt shows is the instructor's setting, and all of it occurs in the real data: every question with right answers and feedback (CSC 320, CSC 370, MATH 101), only the wrongly answered questions (STAT 260, GEOG 104), the score only (MATH 100), or nothing because it was never submitted ("still in progress"). The page says which
+- Parsing (BeautifulSoup): questions start at `<a name="Q<n>">` headers (two header styles: normal and retake); section headings are `h2.dhdg_1`; the instructor's HTML is in `<d2l-html-block html="…">`; answer icons are read by `alt` (`Selected`/`Unselected` radio or checkbox, `Correct Response`, `Incorrect Response`, `Correct Answer`) and shown as ◉ ○ ☑ ☐ and "✓ correct", "✗ incorrect", "✓ correct answer" after the answer. Typed answers keep the right value in brackets. Feedback, retake notes ("Retaken", "Correct on previous attempt(s)"), and points are kept
+- An unreadable page keeps its raw copy and is noted on the page
+- Question images (`/content/enforced/…`) go through the linked files step and are embedded like any other page image
+- MathML stays in the HTML (browsers render it). Markdown copies turn formulas into `$LaTeX$` from the equation editor's annotation, else plain text (any page, not only quizzes)
+- `quizzes.html` links each quiz's attempts; the review row shows "N attempts · M questions"
+- Tested live: crawl and download of CSC 320, CSC 370, MATH 101 (26 attempts, 333 questions, no failures); parser checked on all 51 attempts in the archive
+
 - Folder structure: see 5.3
 - Filename rules: whitespace collapsed; `<>:"/\|?*` and control characters → `_`; trailing dots/spaces trimmed; Windows reserved names (`CON`, `COM1`, …) prefixed with `_`; names capped at 80 characters keeping the extension; file names shortened to keep paths under 250 characters where the folder allows
 - Duplicates in the same folder (case-insensitive) → `name (2).ext`; the same crawl always yields the same paths
@@ -240,7 +252,8 @@ Tier: **Easy** = direct API download · **Medium** = needs assembling or rewriti
 | Item | Found | Source | Saved as | Tier |
 |---|---|---|---|---|
 | Quiz (name, instructions, description, dates, time limit) | e.g. 4 in 3 test courses | `quizzes/` | `quizzes.html` + `quizzes.json` (+ `quizzes.md` if chosen) | Easy |
-| Questions / my attempts | — | `quizzes/{id}/questions/`, `/attempts/` | HTTP 403 for students in every course tried | Blocked |
+| Questions / my attempts (API) | — | `quizzes/{id}/questions/`, `/attempts/` | HTTP 403 for students in every course tried | Blocked |
+| My attempts (review pages) | 51 attempts, 426 questions in 12 courses | `/d2l/lms/quizzing/user/quiz_submissions.d2l?qi=&ou=` lists them; `quiz_submissions_attempt.d2l?qi=&ai=&ou=` shows one | `<Quiz>/attempts.html` (+ `.md`), raw page in `<Quiz>/_originals/attempt N.html` | Medium |
 
 #### Classlist
 
@@ -298,6 +311,8 @@ Tier: **Easy** = direct API download · **Medium** = needs assembling or rewriti
       discussions.json
     grades/        grades.html   grades.csv   grades.json
     quizzes/       quizzes.html   quizzes.json
+      <Quiz>/attempts.html          every attempt: score, questions, your answers, right answers, feedback
+      <Quiz>/_originals/attempt 1.html   each attempt's review page as downloaded
     classlist/     classlist.csv   classlist.json
     calendar/      calendar.ics   calendar.json
 ```
@@ -315,7 +330,7 @@ Non-term org units (advising, makerspace, …) have no term in their name, so th
 5. **HTML page dependencies:** downloaded and embedded into the HTML files (self-contained pages). Linked documents are saved as separate files. Trade-off: template CSS/JS is duplicated in every page, so pages are larger.
 6. **New categories:** **calendar** is added to the category picker. **Course info** is always included, without asking.
 7. **Classlist:** keep everything, including other students' emails. The archive lives in the repo's git-ignored `D2L Archive/` folder (or outside the repo); it must never be committed.
-8. **Quizzes:** metadata only (the API blocks questions and attempts). HTML by default, Markdown if chosen, like other generated pages. Scraping attempt-review pages through the browser is possible later.
+8. **Quizzes:** metadata from the API, plus my attempts from the review pages students see (decided 2026-10-05; the API blocks questions and attempts). Part of the quizzes category, no extra prompt. Every attempt is kept, since attempts can show different questions. Per quiz: one generated page with all attempts, a Markdown copy when quizzes are chosen for Markdown, and the raw review pages. No JSON for attempts.
 9. **Out of scope:** Locker, ePortfolio, awards, and email.
 10. **Markdown conversion scope:** only pages the tool generates from HTML/JSON (content HTML pages, announcements, assignments, discussions, quizzes, grades, course info). Downloaded files (PDF, slides, images, video, …) always stay in their original format. The `.html` is kept alongside as the backup.
 11. **Metadata:** raw API JSON is kept for every category (`<category>.json`). It's the source for sync and for regenerating pages.
@@ -375,3 +390,15 @@ DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plu
 ## 10. Open Questions
 
 - Session re-check interval and pause/re-login during downloads (section 2)
+
+---
+
+## 11. Study pack for NotebookLM — PLANNED (2026-10-05)
+
+Goal: per course, a small set of clean sources to upload to a NotebookLM (Gemini) notebook. NotebookLM does the concept extraction; the pack's job is low noise, few files (a notebook takes a limited number of sources), clear provenance.
+
+- Offline step over an existing archive; no Brightspace requests
+- Keeps: content (lectures, notes, tutorials), assignments (instructions, rubrics, feedback), quiz questions, course discussions, announcements. Drops: classlist, grades, calendar, shortcuts, raw JSON, assets
+- PDFs stay PDFs; generated pages use their Markdown; merged per module/category when over the source limit, each part headed with where it came from
+- **Practice questions (decided 2026-10-05):** all unique questions from every attempt of a quiz are combined into one document. The same question in several attempts appears once (matched on its text, `Question.prompt`); attempts that drew different questions all contribute
+- Open: source limit to target (plan tier), pptx handling (PDF via LibreOffice or text), videos (skip or transcribe), whether wrong answers stay marked as wrong

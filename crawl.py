@@ -15,6 +15,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from auth import BASE_URL, ApiError, Session, SessionExpired
 from courses import Course
 from embed import canonical, css_refs, decode, html_refs, local_folder, view_attachment
+from quiz_attempts import Attempt, attempt_ids, attempt_url, parse_attempt, submissions_url
 from ui import console, plural
 
 # Categories the user picks from
@@ -74,6 +75,7 @@ class CategoryResult:
     error: str | None = None  # set when the category couldn't be crawled
     html_pages: list[HtmlPage] = field(default_factory=list)  # content only
     missing: list[str] = field(default_factory=list)  # course files only: referenced, but not on Brightspace
+    attempts: list[Attempt] = field(default_factory=list)  # quizzes only: my attempts' review pages, read
 
 
 @dataclass
@@ -320,7 +322,39 @@ def _assignments(s: Session, course: Course, status: Status) -> CategoryResult:
 
 def _quizzes(s: Session, course: Course, status: Status) -> CategoryResult:
     quizzes = _paged(s, f"/d2l/api/le/{{le}}/{course.id}/quizzes/")
-    return CategoryResult(unit="quiz", items=len(quizzes), data=quizzes)
+    r = CategoryResult(unit="quiz", items=len(quizzes), data=quizzes)
+
+    # the API refuses students their attempts, but the review pages they see in Brightspace load fine;
+    # only the submissions list and the attempt pages are fetched, never a page that starts a quiz
+    def attempts(q) -> tuple[list[Attempt], int]:
+        qid, found, failed = q["QuizId"], [], 0
+        try:
+            ids = attempt_ids(decode(s.fetch(submissions_url(course.id, qid))))
+        except ApiError:
+            return [], 1
+        for n, ai in enumerate(ids, 1):
+            try:
+                found.append(parse_attempt(qid, ai, n, s.fetch(attempt_url(course.id, qid, ai))))
+            except ApiError:
+                failed += 1
+        return found, failed
+
+    fetched = s.map(attempts, quizzes, lambda n: status(f"attempts {n}/{len(quizzes)}"))
+    for q, (found, _) in zip(quizzes, fetched):
+        for a in found:
+            r.attempts.append(a)
+            r.files.append(RemoteFile((q.get("Name") or "Untitled", "_originals"), f"attempt {a.number}.html",
+                                      attempt_url(course.id, q["QuizId"], a.attempt_id), len(a.raw), a.raw))
+
+    notes = []
+    if r.attempts:
+        notes.append(f"{plural(len(r.attempts), 'attempt')} · {plural(sum(len(a.questions) for a in r.attempts), 'question')}")
+    if hidden := sum(not a.questions for a in r.attempts):
+        notes.append(f"{hidden} without questions")
+    if failed := sum(f for _, f in fetched):
+        notes.append(f"{failed} couldn't be read")
+    r.note = " · ".join(notes)
+    return r
 
 
 def _announcements(s: Session, course: Course, status: Status) -> CategoryResult:
@@ -383,6 +417,9 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
         if result.error is None:
             for text in _strings(result.data):
                 add(html_refs(text, None))  # rich text: relative references can't be resolved
+            for attempt in result.attempts:
+                for q in attempt.questions:
+                    add(html_refs(q.html, None))
 
     # size checks run in parallel; stylesheets are fetched to find the fonts and images they use,
     # which are checked in the next round

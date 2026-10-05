@@ -12,6 +12,7 @@ Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
 - **Saved, encrypted session**: the login session is encrypted on disk with a key kept in your OS keychain, and reused until it expires. If it expires mid-download, the tool pauses, lets you log in again, and carries on.
 - **Pick what you want**: every course you're enrolled in, grouped by term, and eight categories: content, classlist, grades, discussions, assignments, quizzes, announcements, calendar. Course info (overview, syllabus attachment, banner image) is always included.
 - **Review before downloading**: every selected course is crawled first and summarised: items, files, and sizes per category, with videos counted separately. Nothing is downloaded until you confirm.
+- **Your quiz attempts**: every attempt you submitted, with the questions, your answers, the right answers, and feedback, as far as each quiz lets students review them. The API doesn't allow this, so the tool reads the same review pages you see in Brightspace (never a page that starts a quiz).
 - **Readable offline pages**: announcements, assignments (instructions, rubric, your submissions, feedback), discussion threads, quizzes, grades, and course info become clean HTML pages. Course content pages are saved self-contained, with images, styles, and scripts embedded, and links between Brightspace items point at the archived copies.
 - **Optional Markdown**: any kind of generated page can also be saved as `.md`.
 - **Re-runnable**: files already in the archive are skipped, so an interrupted download resumes where it stopped.
@@ -115,6 +116,7 @@ D2L Archive/
       discussions.json
     grades/                         grades.html  grades.csv  grades.json
     quizzes/                        quizzes.html  quizzes.json
+      Quiz 1/                       attempts.html: every attempt, question by question  _originals/attempt 1.html
     classlist/                      classlist.csv  classlist.json
     calendar/                       calendar.ics  calendar.json
     _course-files/
@@ -144,7 +146,8 @@ download.py       Output paths, raw JSON, file downloads with skip-if-present an
 exports.py        grades.csv, classlist.csv, calendar.ics
 pages.py          Generated HTML pages, content outline, links page, shortcuts
 embed.py          Finding and rewriting references in Brightspace HTML (embedding, local links)
-markdown_copy.py  Markdown copies of generated pages
+quiz_attempts.py  Reading quiz attempt review pages: questions, answers, right answers, feedback
+markdown_copy.py  Markdown copies of generated pages (formulas as LaTeX)
 runlog.py         Per-course and archive-wide download logs
 ui.py             Shared terminal styling and helpers
 tests/            Test scripts (fixtures in tests/fixtures/ are git-ignored)
