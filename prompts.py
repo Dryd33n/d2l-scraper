@@ -1,6 +1,6 @@
 """Interactive terminal prompts for choosing what to archive."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import questionary
@@ -34,6 +34,7 @@ class DownloadOptions:
     markdown: list[str]  # keys of MARKDOWN_KINDS to also save as .md
     output: Path = DEFAULT_OUTPUT
     profile: str = DEFAULT_PROFILE  # key of auth.PROFILES, chosen right after login
+    study_packs: list[int] = field(default_factory=list)  # ids of the courses to build a study pack for
 
 
 def _check_output(text: str) -> bool | str:
@@ -110,6 +111,17 @@ def select_download_options(crawls: list[CourseCrawl]) -> DownloadOptions | None
     if output is None:
         return None
     return DownloadOptions(videos=include_videos, markdown=markdown, output=Path(output).expanduser().resolve())
+
+
+def select_study_packs(courses: list[Course]) -> list[int] | None:
+    """Ask which of the picked courses get a study pack for NotebookLM. None ticked is fine.
+    Returns course ids, or None if cancelled."""
+    return in_thread(questionary.checkbox(
+        "Build a study pack for NotebookLM for:",
+        choices=[questionary.Choice(title=c.short_name, value=c.id) for c in courses],
+        instruction="(space toggle · a all · enter confirm, none is fine)",
+        style=PROMPT_STYLE,
+    ).ask)
 
 
 def select_courses(courses: list[Course]) -> list[Course] | None:

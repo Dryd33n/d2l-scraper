@@ -10,7 +10,8 @@ from auth import BASE_URL, PROFILES, connect
 from courses import list_courses
 from crawl import crawl
 from download import Summary, download
-from prompts import DownloadOptions, select_categories, select_courses, select_download_options, select_profile
+from prompts import (DownloadOptions, select_categories, select_courses, select_download_options, select_profile,
+                     select_study_packs)
 from review import review
 from ui import ACCENT, console, format_size, ok, plural, warn
 
@@ -38,6 +39,11 @@ def main() -> None:
             warn("Cancelled.")
             sys.exit(1)
 
+        study_packs = select_study_packs(selected)
+        if study_packs is None:
+            warn("Cancelled.")
+            sys.exit(1)
+
         categories = select_categories()
         if categories is None:
             warn("Cancelled.")
@@ -61,6 +67,7 @@ def main() -> None:
 
         console.print()
         options.profile = profile
+        options.study_packs = study_packs
         summary = download(p, session, crawls, options, started)
         print_summary(summary, options)
 
@@ -78,7 +85,14 @@ def print_summary(summary: Summary, options: DownloadOptions) -> None:
         console.print(f"[red]✗[/] {escape(str(path.relative_to(options.output)))} [dim]{escape(reason)}[/]")
     if len(summary.failed) > 10:
         console.print(f"[red]✗[/] …and {len(summary.failed) - 10} more failures")
+    for log in summary.courses:
+        if pack := log.study_pack:
+            ok(f"Study pack for {escape(log.crawl.course.short_name)}: {plural(len(pack.written), 'source')}"
+               f"{' [dim](' + str(len(pack.left_out)) + ' left out, see manifest.md)[/]' if pack.left_out else ''}")
     console.print(f"\nArchive: [bold]{escape(str(options.output))}[/]")
+    if any(log.study_pack for log in summary.courses):
+        console.print(f"Study packs: [bold]{escape(str(options.output / 'Study Packs'))}[/] "
+                      "[dim](upload each pack's files, except manifest.md, to a NotebookLM notebook)[/]")
     if summary.log:
         console.print(f"Log: [bold]{escape(str(summary.log))}[/] [dim](and one in each course folder)[/]")
 

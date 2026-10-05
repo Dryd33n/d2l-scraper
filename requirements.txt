@@ -6,3 +6,5 @@ rich
 markdownify
 httpx
 beautifulsoup4
+pypdf
+pillow

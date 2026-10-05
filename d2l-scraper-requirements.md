@@ -393,12 +393,65 @@ DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plu
 
 ---
 
-## 11. Study pack for NotebookLM — PLANNED (2026-10-05)
+## 11. Study pack for NotebookLM — DONE (2026-10-05)
 
-Goal: per course, a small set of clean sources to upload to a NotebookLM (Gemini) notebook. NotebookLM does the concept extraction; the pack's job is low noise, few files (a notebook takes a limited number of sources), clear provenance.
+Built in `studypack.py` (`python studypack.py [archive]` on its own; "Build a study pack for NotebookLM for:" after the course picker in the main run). Answer keys come from `quiz_attempts.study_card`. Implementation notes:
+- Pages: the `.md` copy when there is one, else the `.html` converted; breadcrumb, page title, and footer dropped (each page is merged under its own heading); images become `[image]`
+- Content order: `content.json` topic order per module, then anything else alphabetically; each top-level module's text document comes first in that module. `content.html`/`links.html` at the content root are skipped (the outline is in the overview)
+- Code and text files (`.java`, `.c`, `.asm`, `.tex`, `.txt`, …, up to 200 KB) go into the module's text document in code blocks, also when attached to assignments
+- Assignment attachments are sources in an "Assignment files" group; submissions and returned feedback files are left out
+- Linked documents in `_course-files/` (not `_assets`, `_originals`) are included as a "Linked files" group
+- Duplicates by SHA-1 of the file
+- Turning slides into text only saves sources when a module has several slide/Word files or already has a text document
+- The pack is written to `.<course>.building` and swapped in; an existing folder without `manifest.md` is never replaced
+- A failed pack in the main run is a failure in the course log; the archive itself is unaffected
+- Tested: synthetic archive (`tests/test_studypack.py`), and every course in the real archive
 
-- Offline step over an existing archive; no Brightspace requests
-- Keeps: content (lectures, notes, tutorials), assignments (instructions, rubrics, feedback), quiz questions, course discussions, announcements. Drops: classlist, grades, calendar, shortcuts, raw JSON, assets
-- PDFs stay PDFs; generated pages use their Markdown; merged per module/category when over the source limit, each part headed with where it came from
-- **Practice questions (decided 2026-10-05):** all unique questions from every attempt of a quiz are combined into one document. The same question in several attempts appears once (matched on its text, `Question.prompt`); attempts that drew different questions all contribute
-- Open: source limit to target (plan tier), pptx handling (PDF via LibreOffice or text), videos (skip or transcribe), whether wrong answers stay marked as wrong
+Goal: per course, a small set of clean sources to upload to a NotebookLM (Gemini) notebook. NotebookLM does the concept extraction; the pack's job is low noise, few files, clear provenance.
+
+**NotebookLM limits (checked 2026-10-05):** 50 sources per notebook on Free (Plus 100, Pro 300); each source up to 500,000 words or 200 MB. Accepts PDF, Word, PowerPoint, Markdown, text, images, audio, websites, YouTube. No conversion is needed for Office files.
+
+**Decisions (2026-10-05):**
+1. **Entry points:**
+   - **In the main run (decided 2026-10-05):** right after the course picker, a checkbox "Build a study pack for:" lists the courses just picked, none ticked (enter skips it). Packs are built after the download finishes, from what's on disk, so files from earlier runs count too. The summary prints each pack's folder and source count; the course's download log records the build.
+   - **`python studypack.py`:** the same builder, offline over an existing archive (no login, no Brightspace requests); pick from the archive's course folders. For rebuilding a pack without downloading again.
+   - Either way, re-running rebuilds the pack from scratch.
+   - If a category the pack draws on (content, assignments, quizzes, discussions, announcements) is unticked in the category picker, the pack uses whatever an earlier run left on disk, and the manifest says which parts are missing.
+2. **One pack per course.** Combined multi-course packs: later, if wanted.
+3. **Location:** `<archive>/Study Packs/<course>/`, apart from the course folders.
+4. **Source limit:** Free plan; the pack targets **45 sources**, leaving room for a few of your own.
+5. **Practice questions: answer key only.** Per question: the question, its choices, `Correct answer: …`, and feedback. Your own selections aren't shown. "Answer not shown" when the attempt doesn't reveal it.
+6. **Unique questions:** all questions from every attempt of a quiz are combined into one section per quiz. The same question appears once, matched on its text plus its answer choices (`Question.prompt` + choices). Questions that differ per attempt, like MATH 101's numbers, stay separate. The version kept is one that shows the correct answer, else the latest attempt.
+
+**Layout:**
+```
+Study Packs/Fall 2026 CSC 320 A01 A02 X/
+  01 Course overview.md       course info, content outline, announcements (dated)
+  02 Practice questions.md    a section per quiz
+  03 Assignments.md           instructions, rubrics, feedback
+  04 Discussions.md           threads, replies nested
+  10 Lectures - Unit I - 02-FA.pdf    downloaded files in their own format, named by module path, instructor order
+  30 Tutorials.md             HTML content pages of a module, merged as text
+  manifest.md                 what's in, what was left out and why, web links to add by hand (not a source)
+```
+
+**Content rules:**
+- Kept: content files (PDF, pptx, docx, xlsx, images), HTML content pages (as text), assignments, quiz questions, discussions, announcements, course info and outline
+- Left out: classlist, grades, calendar, raw JSON, `_course-files/_assets`, `.url`/redirect shortcuts, videos. Web links are listed in the manifest
+- Generated pages: use the `.md` copy when it exists, else convert the `.html` (data-URI images dropped)
+- The same file in two places (same content hash) is included once
+
+**Answer key from the attempt marks:**
+- Single choice: the option marked "✓ correct answer", or selected and "✓ correct"
+- Multi-select: selected and ✓, plus unselected and ✗ (each row's mark is whether that row was answered right)
+- Typed answer: the value when ✓, the bracketed value when ✗
+- Matching: the pairs when marked ✓; otherwise "Answer not shown"
+
+**Fitting 45 sources**, in order, one module at a time (the one with the most files first), stopping as soon as it fits, so as much as possible stays as it was:
+1. Merge a module's PDFs and images into one PDF (pypdf; images become pages via Pillow), with the original file names as bookmarks, in parts over 190 MB; then the same per top-level module (CSC 225 has 64 files in 41 module folders, so per-module merging alone lands near the limit)
+2. Move a top-level module's pptx/docx text into its text document (read straight from the Office XML: slide text and speaker notes, paragraphs). Loses visuals, so last
+3. Whatever still doesn't fit is left out, largest file first, and listed in the manifest; nothing is dropped silently
+
+Merging is slow on large PDFs (pypdf): a few seconds for most courses, 2 to 10 minutes for courses with hundreds of MB of scanned notes (MATH 211, STAT 260). The build shows which source it's on.
+
+**Upload:** by hand, dragging the pack folder's files (not `manifest.md`) into a new notebook. No automation; consumer NotebookLM has no API.

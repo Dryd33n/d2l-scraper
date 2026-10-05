@@ -233,3 +233,96 @@ def _clean(frag: BeautifulSoup) -> str:
         if ours(t) and not t.get_text(strip=True) and t.find(["img", "math"]) is None:
             t.decompose()
     return prompt
+
+
+# ---------- study cards (for the study pack) ----------
+
+SYMBOLS = {"◉": "selected", "☑": "selected", "○": "unselected", "☐": "unselected"}
+
+
+@dataclass
+class Card:
+    """A question as a study card: the question, its choices, the right answer, and feedback, without
+    the attempt's own selections."""
+    prompt: str  # HTML
+    choices: list[str]  # HTML of each choice, in order; empty for typed answers
+    answer: list[str] | None  # letters ("B") for choice questions, values for typed and matching answers; None when not shown
+    feedback: str  # HTML, or ""
+    key: str  # text of the question and its choices, to spot the same question in another attempt
+    lettered: bool  # a choice question: answers are letters of `choices`
+
+
+def study_card(q: Question) -> Card:
+    """Read a parsed question back into a card, working out the right answer from the attempt's marks:
+    a choice marked "correct answer", or selected and marked correct; for multi-select, each row's mark
+    says whether that row was answered right; a typed answer that was wrong shows the right one in brackets."""
+    frag = BeautifulSoup(q.html, "html.parser")
+    feedback = ""
+    if label := frag.find("strong", string=re.compile(r"^\s*Feedback\s*$")):
+        para = label.find_parent("p") or label
+        rest = list(para.next_siblings)
+        feedback = "".join(str(t) for t in rest).strip()
+        for t in rest:
+            t.extract()
+        container = para.parent
+        para.decompose()
+        if container is not None and container.name == "div" and not container.get_text(strip=True) and container.find("img") is None:
+            container.decompose()
+
+    rows = []
+    for row in frag.find_all("div", class_="row"):
+        marks = [m.get_text(strip=True) for m in row.find_all("span", class_="mark")]
+        for m in row.find_all("span", class_="mark"):
+            m.decompose()
+        text = row.decode_contents()
+        state = next((SYMBOLS[s] for s in SYMBOLS if s in text), None)
+        box = "☑" in text or "☐" in text
+        for s in SYMBOLS:
+            text = text.replace(s, "")
+        rows.append((state, box, marks, text.strip()))
+        row.decompose()
+    for t in frag.find_all(string=re.compile(r"^\s*Answer:\s*$")):
+        t.extract()
+    prompt = str(frag).strip()
+
+    choice_rows = [r for r in rows if r[0] is not None]
+    other_rows = [r for r in rows if r[0] is None]
+    choices = [text for _, _, _, text in choice_rows]
+    answer: list[str] | None = None
+    if choice_rows:
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        multi = any(box for _, box, _, _ in choice_rows)
+        right = []
+        known = True
+        for i, (state, _, marks, _) in enumerate(choice_rows):
+            correct_answer = "✓ correct answer" in marks
+            ok, bad = "✓ correct" in marks, "✗ incorrect" in marks
+            if multi:
+                if not (ok or bad or correct_answer):
+                    known = False
+                elif correct_answer or (state == "selected") == ok:
+                    right.append(letters[i % 26])
+            elif correct_answer or (state == "selected" and ok):
+                right.append(letters[i % 26])
+        answer = right if known and right else None
+    elif other_rows:  # typed answers and matching: each marked row is one answer
+        values = []
+        for _, _, marks, text in other_rows:
+            if "✓ correct" in marks:
+                values.append(_inline(text))
+            elif "✗ incorrect" in marks:
+                bracket = re.search(r"<strong>\s*\((.*?)\)\s*</strong>", text, re.S)
+                values.append(_inline(bracket[1]) if bracket else None)
+            else:
+                choices.append(text)  # e.g. the list a matching question's items are matched against
+        answer = values if values and None not in values else None
+
+    words = lambda html: " ".join(BeautifulSoup(html, "html.parser").get_text(" ", strip=True).split())
+    srcs = lambda html: " ".join(re.findall(r'src="([^"]+)"', html))
+    key = " | ".join([q.prompt, *(f"{words(c)} {srcs(c)}".strip() for c in choices)]).lower()
+    return Card(prompt, choices, answer, feedback, key, bool(choice_rows))
+
+
+def _inline(html: str) -> str:
+    """A short answer's text, keeping math and images as they are."""
+    return " ".join(html.split())

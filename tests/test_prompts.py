@@ -52,6 +52,16 @@ with sync_playwright():  # main.py prompts while Playwright's loop is running
     check_cat("untick all blocked, then pick first", run_cat("a" + ENTER + SPACE + ENTER), ["content"])
     check_cat("ctrl-c cancels", run_cat("\x03"), None)
 
+    def run_packs(keys):
+        with create_pipe_input() as inp:
+            inp.send_text(keys)
+            prompts.questionary.checkbox = functools.partial(real, input=inp, output=DummyOutput())
+            return prompts.select_study_packs([courses[0], courses[1]])
+
+    check_cat("study packs: none ticked by default", run_packs(ENTER), [])
+    check_cat("study packs: pick the second course", run_packs(DOWN + SPACE + ENTER), [2])
+    check_cat("study packs: ctrl-c cancels", run_packs("\x03"), None)
+
 
     import pickle
     from prompts import DownloadOptions

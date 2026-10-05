@@ -266,6 +266,18 @@ def download(p: Playwright, session: Session, crawls: list[CourseCrawl], options
             summary.course(pj.crawl).markdown.append(pj.markdown)
         for path, reason in failed:
             summary.fail(path, reason)
+
+        # from what's on disk, after everything else, so files from earlier runs count too
+        from studypack import PACKS_DIR, build_pack  # imports this module
+        for crawl in (c for c in crawls if c.course.id in options.study_packs):
+            log = summary.course(crawl)
+            label = f"Building the study pack for {escape(crawl.course.short_name)}..."
+            with console.status(label) as spinner:
+                try:
+                    log.study_pack = build_pack(log.folder, root / PACKS_DIR,
+                                                status=lambda text: spinner.update(f"{label} [dim]{escape(text)}[/]"))
+                except Exception as e:  # the archive itself is done; a failed pack shouldn't lose it
+                    log.failed.append((root / PACKS_DIR / log.folder.name, f"study pack: {type(e).__name__}: {e}"))
     except KeyboardInterrupt:
         stopped = "cancelled"
         raise

@@ -15,6 +15,7 @@ Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
 - **Your quiz attempts**: every attempt you submitted, with the questions, your answers, the right answers, and feedback, as far as each quiz lets students review them. The API doesn't allow this, so the tool reads the same review pages you see in Brightspace (never a page that starts a quiz).
 - **Readable offline pages**: announcements, assignments (instructions, rubric, your submissions, feedback), discussion threads, quizzes, grades, and course info become clean HTML pages. Course content pages are saved self-contained, with images, styles, and scripts embedded, and links between Brightspace items point at the archived copies.
 - **Optional Markdown**: any kind of generated page can also be saved as `.md`.
+- **Study packs for NotebookLM**: for the courses you pick, a folder of at most 45 sources to drop into a [NotebookLM](https://notebooklm.google.com) notebook: lecture files in their own format, the course overview, assignments, discussions, and every quiz question you've seen with its answer.
 - **Re-runnable**: files already in the archive are skipped, so an interrupted download resumes where it stopped.
 - **Logged**: each run is recorded in a detailed log per course and a summary for the whole archive.
 
@@ -47,7 +48,7 @@ python main.py
 
 1. **Log in.** The first time you run it (or whenever your session has expired), a Chromium window opens on the Brightspace login page. Log in as usual; the window closes once you reach the Brightspace home page.
 2. **Pick a scraping profile**: how many requests run at once. **Polite** (3), **Fair** (6, the default), or **Aggressive** (12). Everything runs in parallel; the profile only sets how hard Brightspace gets hit.
-3. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out.
+3. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out. Then pick which of them should get a study pack (none is fine); see [Study packs](#study-packs).
 4. **Pick categories** the same way. All are checked by default.
 5. **Review.** The tool crawls every selected course and shows a summary box. **←/→** switches between courses (with several courses, the first page totals all of them), **enter** continues, **esc** cancels.
 
@@ -84,6 +85,7 @@ Other entry points, useful while developing:
 |---|---|
 | `python auth.py` | Log in if needed and print who you are authenticated as |
 | `python courses.py` | Print all enrolled courses grouped by term |
+| `python studypack.py [archive folder]` | Build or rebuild study packs from an existing archive, without logging in |
 
 ### Logging out
 
@@ -125,6 +127,26 @@ D2L Archive/
       Lab1_Videos/…                 files linked from pages, in their Brightspace folders
 ```
 
+## Study packs
+
+A study pack is a folder in `D2L Archive/Study Packs/<course>/` made for a NotebookLM notebook, whose free plan takes 50 sources. Upload every file in it except `manifest.md`.
+
+```
+Study Packs/Fall 2026 CSC 320 A01 A02 X/
+  01 Course overview.md       course info, content outline, announcements
+  02 Practice questions.md    every quiz question from your attempts, once each, with the right answer and feedback
+  03 Assignments.md           instructions, rubrics, feedback
+  04 Discussions.md
+  05 Lectures (pages).md      a module's HTML pages and code files as text
+  06 02-FA.pdf                lecture files as they are, in the instructor's order
+  manifest.md                 what's in each source, web links to add by hand, what was left out and why
+```
+
+- It's built from what's on disk, so earlier runs count too, and it's rebuilt from scratch each time.
+- PDFs, PowerPoint, Word, and images stay as they are. Videos, zip files, your own submissions, the classlist, grades, and calendar are left out.
+- To stay at 45 sources it merges PDFs (and images) module by module, biggest module first, only as far as needed; then whole top-level modules; then turns slides and Word documents into text. Anything that still doesn't fit is listed in the manifest. Courses with hundreds of MB of PDFs can take a few minutes.
+- The same file in two places is included once.
+
 ## How it works
 
 - **Authentication**: [Playwright](https://playwright.dev/python/) opens a visible browser for you to log in. The resulting cookies are saved with `storage_state`, encrypted with [Fernet](https://cryptography.io/en/latest/fernet/), and written to `.auth/state.enc`. The key is generated on first run and stored in the OS keychain, so the file is useless if copied to another machine. Before each run the tool checks the session with `/d2l/api/lp/{version}/users/whoami`.
@@ -149,6 +171,7 @@ embed.py          Finding and rewriting references in Brightspace HTML (embeddin
 quiz_attempts.py  Reading quiz attempt review pages: questions, answers, right answers, feedback
 markdown_copy.py  Markdown copies of generated pages (formulas as LaTeX)
 runlog.py         Per-course and archive-wide download logs
+studypack.py      Study packs for NotebookLM, built from the archive on disk
 ui.py             Shared terminal styling and helpers
 tests/            Test scripts (fixtures in tests/fixtures/ are git-ignored)
 d2l-scraper-requirements.md   Design notes, content inventory, and decisions

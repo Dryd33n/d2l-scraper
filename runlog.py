@@ -24,6 +24,7 @@ class CourseLog:
     pages: list[Path] = field(default_factory=list)
     markdown: list[Path] = field(default_factory=list)
     failed: list[tuple[Path, str]] = field(default_factory=list)
+    study_pack: object | None = None  # studypack.Pack, when one was built
 
     @property
     def downloaded_bytes(self) -> int:
@@ -111,6 +112,12 @@ def course_section(log: CourseLog, started: datetime, finished: datetime, stoppe
         copies = f" (+ {len(log.markdown)} Markdown copies)" if log.markdown else ""
         lines += ["", f"Pages written: {len(log.pages)}{copies}"]
         lines += [f"  {_rel(p, base)}" for p in sorted(log.pages + log.markdown)]
+
+    if pack := log.study_pack:
+        lines += ["", f"Study pack: {pack.folder} ({plural(len(pack.written), 'source')})"]
+        lines += [f"  {s}" for s in pack.steps]
+        if pack.left_out:
+            lines.append(f"  {len(pack.left_out)} left out, listed in its manifest.md")
 
     lines += ["", f"Failures: {len(log.failed)}" if log.failed else "Failures: none"]
     lines += [f"  {_rel(p, base)}: {reason}" for p, reason in log.failed]
