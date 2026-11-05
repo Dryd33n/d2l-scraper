@@ -31,7 +31,12 @@
     $bin = & $uv tool dir --bin
 
     # An unmanaged uv is a test install, which must leave the user's PATH alone
-    if (-not $env:UV_UNMANAGED_INSTALL) { & $uv tool update-shell *> $null }
+    if (-not $env:UV_UNMANAGED_INSTALL) {
+        # uv reports to stderr, which Windows PowerShell 5.1 turns into a fatal error if 'Stop' is set
+        $ErrorActionPreference = 'Continue'
+        & $uv tool update-shell 2>&1 | Out-Null
+        $ErrorActionPreference = 'Stop'
+    }
     # this window started before the PATH changed, so it needs telling too
     if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$bin;$env:Path" }
 
