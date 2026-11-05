@@ -1,6 +1,10 @@
 """Shared terminal styling: the rich console and the matching questionary style."""
 
+import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Callable, TypeVar
 
 import questionary
@@ -49,6 +53,17 @@ def in_thread(fn: Callable[[], T]) -> T:
     """
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(fn).result()
+
+
+def open_folder(path: Path) -> None:
+    """Show a folder in the file manager, if there is one."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)
+        else:
+            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", str(path)], check=False)
+    except OSError:
+        pass  # no file manager; the path has already been printed
 
 
 def ok(message: str) -> None:

@@ -91,13 +91,13 @@ with sync_playwright():  # main.py prompts while Playwright's loop is running
     CLEAR = "\x7f" * 200  # backspace over the default
     check_cat("custom output folder", run_opts(ENTER + ENTER + CLEAR + str(other) + ENTER, with_videos).output, other.resolve())
     inside = str(prompts.PROJECT_DIR / "archive")
-    check_cat("folder inside repo rejected, then default accepted",
+    check_cat("folder inside the program rejected, then another accepted",
               run_opts(ENTER + ENTER + CLEAR + inside + ENTER + CLEAR + str(other) + ENTER, with_videos).output, other.resolve())
     check_cat("ctrl-c on output folder cancels", run_opts(ENTER + ENTER + "\x03", with_videos), None)
-    check_cat("subfolder of the ignored archive folder accepted",
+    check_cat("subfolder of the default folder accepted",
               run_opts(ENTER + ENTER + CLEAR + str(prompts.DEFAULT_OUTPUT / "Fall 2026") + ENTER, with_videos).output,
               (prompts.DEFAULT_OUTPUT / "Fall 2026").resolve())
-    check_cat("default is the repo's D2L Archive folder", prompts.DEFAULT_OUTPUT, prompts.PROJECT_DIR / "D2L Archive")
+    check_cat("default is outside the program's folder", prompts.PROJECT_DIR in prompts.DEFAULT_OUTPUT.parents, False)
 
 # scraping profile
 real_select = questionary.select

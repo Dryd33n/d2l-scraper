@@ -1,7 +1,7 @@
 # D2L Scraper — Requirements
 
 > Status: In progress (phase 1 download built: files, raw JSON, CSV, ICS; generated HTML pages next)
-> Last updated: 2026-10-05
+> Last updated: 2026-11-05
 
 ---
 
@@ -19,7 +19,7 @@
 
 **Phase 6 (2026-10-05): quiz attempts** are archived from the review pages students see (see 4.6 and 5.2).
 
-**Next:** the study pack for NotebookLM (section 11), which uses the quiz attempts. Other open items: sync of changed/removed items (section 6), a browsable `index.html` (section 6), any-D2L-instance support (section 1).
+**Next:** the study pack for NotebookLM (section 11), which uses the quiz attempts. Other open items: sync of changed/removed items (section 6), a browsable `index.html` (section 6). Any-school support and the easy install are done (section 12).
 
 **Testing notes:** `tests/fixtures/*.pkl` are crawl results pickled from real courses (git-ignored, personal data). Regenerate with `python tests/run_crawl.py tests/fixtures/with_videos.pkl 382134,504907` and `… without_videos.pkl 397411,376123,507204,293541`. The pickles predate the current grades/course-info JSON shape, so `test_pages.py` uses hand-built records; regenerate them before relying on them for new tests. Prompt tests drive questionary with `create_pipe_input`; tests run inside `sync_playwright()` because prompts must work while Playwright owns the main thread's event loop.
 
@@ -455,3 +455,22 @@ Study Packs/Fall 2026 CSC 320 A01 A02 X/
 Merging is slow on large PDFs (pypdf): a few seconds for most courses, 2 to 10 minutes for courses with hundreds of MB of scanned notes (MATH 211, STAT 260). The build shows which source it's on.
 
 **Upload:** by hand, dragging the pack folder's files (not `manifest.md`) into a new notebook. No automation; consumer NotebookLM has no API.
+
+---
+
+## 12. Easy install and run — DONE (2026-11-05)
+
+**Goal:** someone with nothing installed goes from zero to the course picker with one pasted line.
+
+**Decided:**
+1. **Audience:** people who may never have used a terminal, so nothing assumes Python, git, or terminal knowledge beyond pasting one line and typing `d2l-scraper`.
+2. **Install:** one line pasted into a terminal (`install.ps1`, `install.sh`), using `uv` to fetch Python 3.13 and the dependencies from the GitHub master zip, so git isn't needed either. No `.exe`.
+3. **Any D2L school:** the first run asks for a link from any page of the school's Brightspace, reduces it to the address, and checks that against `/d2l/api/versions/` (public JSON on every Brightspace). Saved in `config.json`; `d2l-scraper school` changes it, and switching drops the old login.
+4. **Data locations:** archive defaults to `Documents/D2L Archive`; session, settings, and `error.log` in the per-user data folder (`%LOCALAPPDATA%\d2l-scraper` on Windows).
+5. **No desktop shortcuts** on any OS (user's decision, 2026-11-05). The installer starts the program the first time; after that, `d2l-scraper` in a terminal.
+
+**Built:** `cli.py` (`logout`, `school`, `studypack`, `update`, plain-language errors with the traceback in `error.log`), `config.py`, `pyproject.toml` (replaces `requirements.txt`), installed Chrome or Edge for login with Chromium downloaded only if neither exists, session kept in memory when there's no keychain, offer to open the archive folder at the end.
+
+**Known limits at other schools:** term grouping reads UVic's course codes (`YYYYMM `), so elsewhere courses appear under one "Courses" heading. Only UVic has been tested live.
+
+**Testing:** `tests/test_setup.py`; a from-nothing install in a throwaway folder on Windows; `.github/workflows/install.yml` runs the installer on clean Windows, macOS, and Linux machines.

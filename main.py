@@ -3,21 +3,24 @@
 import sys
 from datetime import datetime
 
+import questionary
 from playwright.sync_api import sync_playwright
 from rich.markup import escape
 
-from auth import BASE_URL, PROFILES, connect
+from auth import PROFILES, connect
+from config import base_url, ensure_school
 from courses import list_courses
 from crawl import crawl
 from download import Summary, download
 from prompts import (DownloadOptions, select_categories, select_courses, select_download_options, select_profile,
                      select_study_packs)
 from review import review
-from ui import ACCENT, console, format_size, ok, plural, warn
+from ui import ACCENT, PROMPT_STYLE, console, format_size, in_thread, ok, open_folder, plural, warn
 
 
 def main() -> None:
-    console.rule(f"[bold {ACCENT}]D2L Scraper[/] [dim]· {BASE_URL.removeprefix('https://')}[/]")
+    ensure_school()
+    console.rule(f"[bold {ACCENT}]D2L Scraper[/] [dim]· {base_url().removeprefix('https://')}[/]")
 
     with sync_playwright() as p:
         session = connect(p)
@@ -70,6 +73,8 @@ def main() -> None:
         options.study_packs = study_packs
         summary = download(p, session, crawls, options, started)
         print_summary(summary, options)
+        if options.output.is_dir() and in_thread(questionary.confirm("Open the archive folder?", default=True, style=PROMPT_STYLE).ask):
+            open_folder(options.output)
 
 
 def print_summary(summary: Summary, options: DownloadOptions) -> None:

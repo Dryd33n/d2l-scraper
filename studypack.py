@@ -614,12 +614,12 @@ def course_folders(archive: Path) -> list[Path]:
                   if d.is_dir() and d.name != PACKS_DIR and (d / "course info").is_dir())
 
 
-def main() -> None:
+def main(folder: str | None = None) -> None:
     import questionary
-    from prompts import DEFAULT_OUTPUT
+    from config import DEFAULT_OUTPUT
     from ui import PROMPT_STYLE, console, ok, warn
 
-    archive = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else DEFAULT_OUTPUT
+    archive = Path(folder).expanduser().resolve() if folder else DEFAULT_OUTPUT
     if not archive.is_dir():
         warn(f"No archive at {archive}")
         sys.exit(1)
@@ -641,4 +641,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

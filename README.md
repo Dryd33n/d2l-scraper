@@ -4,12 +4,32 @@ A command-line tool for archiving your own course data from a D2L Brightspace in
 
 The result is a folder per course that works offline: every file in its original format, readable HTML pages for announcements, assignments, discussions, quiz attempts, grades, and the rest, spreadsheets and a calendar you can import, and the raw API data underneath it all. Optionally, each course also gets a study pack: a ready-to-upload set of sources for a [NotebookLM](https://notebooklm.google.com) notebook.
 
-Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
+Works with any school's Brightspace: the first time you run it, you paste in a link from your school's Brightspace. It has been used in full at the University of Victoria; other schools run the same Brightspace API, but tell me if something behaves differently at yours.
+
+## Install
+
+You don't need Python or anything else first, and you don't need admin rights.
+
+**Windows:** open PowerShell and paste:
+
+```powershell
+irm https://raw.githubusercontent.com/Dryd33n/d2l-scraper/master/install.ps1 | iex
+```
+
+**macOS / Linux:** open a terminal and paste:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dryd33n/d2l-scraper/master/install.sh | sh
+```
+
+It installs and starts straight away. After that, open a terminal and type `d2l-scraper`.
+
+The script is short and you can read it first: [`install.ps1`](install.ps1), [`install.sh`](install.sh). It uses [uv](https://docs.astral.sh/uv/) to get a private copy of Python and the libraries, so nothing else on your computer changes.
 
 ## Features
 
-- **Browser login**: sign in yourself in a real browser window, so SSO and MFA just work. The tool never sees your password.
-- **Saved, encrypted session**: the login session is encrypted on disk with a key kept in your OS keychain, and reused until it expires. If it expires mid-download, the tool pauses, lets you log in again, and carries on.
+- **Browser login**: sign in yourself in a real browser window (your installed Chrome or Edge), so SSO and MFA just work. The tool never sees your password.
+- **Saved, encrypted session**: the login session is encrypted on disk with a key kept in your OS keychain (Windows Credential Manager, macOS Keychain, or on Linux a Secret Service provider such as GNOME Keyring; without one you log in each run), and reused until it expires. If it expires mid-download, the tool pauses, lets you log in again, and carries on.
 - **Pick what you want**: every course you're enrolled in, grouped by term, and eight categories: content, classlist, grades, discussions, assignments, quizzes, announcements, calendar. Course info (overview, syllabus attachment, banner image) is always included.
 - **Review before downloading**: every selected course is crawled first and summarised: items, files, and sizes per category, with videos counted separately. Nothing is downloaded until you confirm.
 - **Your quiz attempts**: every attempt you submitted, with the questions, your answers, the right answers, and feedback, as far as each quiz lets students review them. The API doesn't allow this, so the tool reads the same review pages you see in Brightspace (never a page that starts a quiz).
@@ -19,38 +39,18 @@ Currently targets the University of Victoria's Brightspace (`bright.uvic.ca`).
 - **Re-runnable**: files already in the archive are skipped, so an interrupted download resumes where it stopped.
 - **Logged**: each run is recorded in a detailed log per course and a summary for the whole archive.
 
-## Requirements
-
-- Python 3.10 or newer
-- A working OS keychain, used through [`keyring`](https://pypi.org/project/keyring/): Windows Credential Manager and macOS Keychain work out of the box. On Linux you need a Secret Service provider such as GNOME Keyring or KWallet.
-
-## Setup
-
-```bash
-git clone https://github.com/Dryd33n/d2l-scraper.git
-cd d2l-scraper
-
-python -m venv .venv
-# Windows (PowerShell)
-.\.venv\Scripts\Activate.ps1
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-python -m playwright install chromium
-```
-
 ## Usage
 
 ```bash
-python main.py
+d2l-scraper
 ```
 
-1. **Log in.** The first time you run it (or whenever your session has expired), a Chromium window opens on the Brightspace login page. Log in as usual; the window closes once you reach the Brightspace home page.
-2. **Pick a scraping profile**: how many requests run at once. **Polite** (3), **Fair** (6, the default), or **Aggressive** (12). Everything runs in parallel; the profile only sets how hard Brightspace gets hit.
-3. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out. Then pick which of them should get a study pack (none is fine); see [Study packs](#study-packs).
-4. **Pick categories** the same way. All are checked by default.
-5. **Review.** The tool crawls every selected course and shows a summary box. **←/→** switches between courses (with several courses, the first page totals all of them), **enter** continues, **esc** cancels.
+1. **Your school.** The first time only, it asks for a link to your school's Brightspace. Copy one from your browser while you're on any Brightspace page and paste it in.
+2. **Log in.** The first time you run it (or whenever your session has expired), a browser window opens on the Brightspace login page. Log in as usual; the window closes once you reach the Brightspace home page. This uses Chrome or Edge if you have one; otherwise a browser is downloaded once, for this window only.
+3. **Pick a scraping profile**: how many requests run at once. **Polite** (3), **Fair** (6, the default), or **Aggressive** (12). Everything runs in parallel; the profile only sets how hard Brightspace gets hit.
+4. **Pick courses.** **Space** toggles, **a** toggles all, **enter** confirms. Courses you no longer have access to are greyed out. Then pick which of them should get a study pack (none is fine); see [Study packs](#study-packs).
+5. **Pick categories** the same way. All are checked by default.
+6. **Review.** The tool crawls every selected course and shows a summary box. **←/→** switches between courses (with several courses, the first page totals all of them), **enter** continues, **esc** cancels.
 
    ```
    ┌───────────────────── CSC 230 A01 - A04 X · Spring 2025  1/1 ─────────────────────┐
@@ -74,22 +74,24 @@ python main.py
 
    "Linked files" are files that pages point to rather than list as topics: documents and videos linked from content pages, and the images, stylesheets, and scripts that get embedded into pages. The quizzes row counts your attempts and the questions they show; each attempt's review page is one file.
 
-6. **Choose download options.** Whether to include videos (off by default; not asked if there are none), which kinds of generated page should also get a Markdown copy, and where to save the archive. The default is the git-ignored `D2L Archive/` folder in this repository. Other folders inside the repository are refused, since they could get committed.
-7. **Download.** A progress bar shows bytes and time remaining. Then the study packs you picked are built from the archive, and a summary shows what was downloaded, skipped, and failed, each study pack's source count, and where the logs are.
+7. **Choose download options.** Whether to include videos (off by default; not asked if there are none), which kinds of generated page should also get a Markdown copy, and where to save the archive. The default is `D2L Archive` in your Documents folder.
+8. **Download.** A progress bar shows bytes and time remaining. Then the study packs you picked are built from the archive, and a summary shows what was downloaded, skipped, and failed, each study pack's source count, and where the logs are. It offers to open the archive folder.
 
 Run it again with the same selection to fill in anything missing: files already in the archive with the right size are skipped. Pages, JSON, exports, and study packs are rewritten every run.
 
-Other entry points, useful while developing:
+### Other commands
 
 | Command | What it does |
 |---|---|
-| `python auth.py` | Log in if needed and print who you are authenticated as |
-| `python courses.py` | Print all enrolled courses grouped by term |
-| `python studypack.py [archive folder]` | Build or rebuild study packs from an existing archive, without logging in |
+| `d2l-scraper update` | Install the latest version |
+| `d2l-scraper logout` | Forget your saved login and its encryption key |
+| `d2l-scraper school [link]` | Switch to a different school's Brightspace |
+| `d2l-scraper studypack [archive folder]` | Build or rebuild study packs from an existing archive, without logging in |
+| `d2l-scraper --help` | List all of these |
 
-### Logging out
+If something goes wrong, the error is explained on screen and the technical details go to `error.log` in the program's data folder (on Windows, `%LOCALAPPDATA%\d2l-scraper`). Running it again is always safe.
 
-Delete `.auth/state.enc`. To also remove the encryption key, delete the `d2l-scraper` entry from your OS keychain (on Windows: Credential Manager → Windows Credentials).
+To uninstall: `d2l-scraper logout`, then `uv tool uninstall d2l-scraper`.
 
 ## What gets archived
 
@@ -134,7 +136,7 @@ D2L Archive/
 
 A study pack is a folder in `D2L Archive/Study Packs/<course>/` made for a NotebookLM notebook, whose free plan takes 50 sources. Create a notebook and upload every file in the folder except `manifest.md`; NotebookLM then answers questions, quizzes you, and makes study guides from your own course material.
 
-Pick courses for a pack right after the course picker in `python main.py`, or rebuild packs from an existing archive at any time with `python studypack.py` (no login needed).
+Pick courses for a pack right after the course picker, or rebuild packs from an existing archive at any time with `d2l-scraper studypack` (no login needed).
 
 ```
 Study Packs/Fall 2026 CSC 320 A01 A02 X/
@@ -155,7 +157,7 @@ Study Packs/Fall 2026 CSC 320 A01 A02 X/
 
 ## How it works
 
-- **Authentication**: [Playwright](https://playwright.dev/python/) opens a visible browser for you to log in. The resulting cookies are saved with `storage_state`, encrypted with [Fernet](https://cryptography.io/en/latest/fernet/), and written to `.auth/state.enc`. The key is generated on first run and stored in the OS keychain, so the file is useless if copied to another machine. Before each run the tool checks the session with `/d2l/api/lp/{version}/users/whoami`.
+- **Authentication**: [Playwright](https://playwright.dev/python/) opens a visible browser for you to log in, preferring installed Chrome or Edge and downloading Chromium only if neither is there. The resulting cookies are saved with `storage_state`, encrypted with [Fernet](https://cryptography.io/en/latest/fernet/), and written to `state.enc` in the program's data folder. The key is generated on first run and stored in the OS keychain, so the file is useless if copied to another machine. Before each run the tool checks the session with `/d2l/api/lp/{version}/users/whoami`.
 - **API access**: API versions are discovered at startup from `/d2l/api/versions/`. All requests go through [httpx](https://www.python-httpx.org/) with the login cookies, in parallel: courses, categories, and the items inside them are crawled at the same time, and files download at the same time, never more requests in flight than the profile allows. Everything is retried up to 3 times on network errors, 429, and 5xx. An expired session answers with the same 403 as hidden content, so on a 403 the tool checks `whoami` to tell the two apart before asking you to log in again.
 - **Crawl**: for each course and category the tool walks the relevant endpoints (content table of contents, dropbox folders and your submissions, forum topics and posts, news, grades, quizzes, calendar). HTML content pages are fetched during the crawl, and every page and piece of rich text is scanned for the Brightspace files it references; each one's size is checked with a `HEAD` request. The crawl keeps every file's download URL and the raw JSON, so the download step doesn't crawl again.
 - **Download**: files are streamed to a `.part` file and renamed when complete; if the session expires, files still waiting are held until you've logged in again. Names are made safe for Windows, macOS, and Linux, duplicates get ` (2)`, and paths are kept under Windows' 260-character limit where possible. The same crawl always produces the same paths, which is how a re-run recognises what it already has.
@@ -166,7 +168,9 @@ Study Packs/Fall 2026 CSC 320 A01 A02 X/
 ## Project layout
 
 ```
-main.py           Entry point: login → select → crawl → review → options → download → study packs
+cli.py            The d2l-scraper command: subcommands and plain-language errors
+main.py           The main run: login → select → crawl → review → options → download → study packs
+config.py         Data locations and which school's Brightspace to use
 auth.py           Browser login, encrypted session, API session (retries, file fetch, re-login)
 courses.py        Fetch and group course enrollments
 crawl.py          Crawl of each course/category: counts, files, sizes, raw JSON, linked files
@@ -182,9 +186,23 @@ runlog.py         Per-course and archive-wide download logs
 studypack.py      Study packs for NotebookLM, built from the archive on disk (also runs on its own)
 ui.py             Shared terminal styling and helpers
 tests/            Test scripts (fixtures in tests/fixtures/ are git-ignored)
+install.ps1, install.sh   The one-line installers
 d2l-scraper-requirements.md   Design notes, content inventory, and decisions
 ```
 
+## Developing
+
+```bash
+git clone https://github.com/Dryd33n/d2l-scraper.git
+cd d2l-scraper
+python -m venv .venv
+.venv/Scripts/activate      # macOS / Linux: source .venv/bin/activate
+pip install -e .
+python cli.py
+```
+
+Tests are plain scripts: `python tests/test_setup.py` prints a PASS or FAIL line per check. `tests/test_auth.py` needs a real login.
+
 ## Disclaimer
 
-This is a personal project for archiving your own course materials. It is not affiliated with or endorsed by D2L or the University of Victoria. Use it only on courses you are enrolled in, keep request rates reasonable, and follow your institution's acceptable-use policy.
+This is a personal project for archiving your own course materials. It is not affiliated with or endorsed by D2L or any school. Use it only on courses you are enrolled in, keep request rates reasonable, and follow your institution's acceptable-use policy.

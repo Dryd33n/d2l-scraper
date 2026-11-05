@@ -9,7 +9,7 @@ from playwright.sync_api import sync_playwright
 from auth import Session, connect
 
 COURSE_OFFERING = 3  # D2L org unit type id for course offerings
-TERM_SEASONS = {"01": "Spring", "05": "Summer", "09": "Fall"}  # UVic term codes: YYYYMM
+TERM_SEASONS = {"01": "Spring", "05": "Summer", "09": "Fall"}  # UVic term codes: YYYYMM; other schools get no terms
 
 
 @dataclass
@@ -63,6 +63,8 @@ def list_courses(session: Session) -> list[Course]:
 def by_term(courses: list[Course]) -> list[tuple[str, list[Course]]]:
     """Group courses by term label, newest term first, non-term org units last, names A-Z."""
     ordered = sorted(courses, key=lambda c: c.name)
+    if not any(c.term for c in courses):
+        return [("Courses", ordered)] if ordered else []  # a school whose course codes have no term we can read
     ordered.sort(key=lambda c: c.term or "", reverse=True)  # stable: names stay A-Z within a term
     return [(label, list(group)) for label, group in groupby(ordered, key=lambda c: c.term_label)]
 

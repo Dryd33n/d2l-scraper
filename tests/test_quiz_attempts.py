@@ -1,6 +1,8 @@
 import re, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+import config
+config.use("https://bright.uvic.ca")
 from courses import Course
 from crawl import COURSE_FILES, CategoryResult, CourseCrawl, RemoteFile, crawl_category
 from download import plan, write_pages

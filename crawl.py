@@ -12,7 +12,8 @@ from urllib.parse import quote, unquote
 from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
-from auth import BASE_URL, ApiError, Session, SessionExpired
+from auth import ApiError, Session, SessionExpired
+from config import base_url
 from courses import Course
 from embed import canonical, css_refs, decode, html_refs, local_folder, view_attachment
 from quiz_attempts import Attempt, attempt_ids, attempt_url, parse_attempt, submissions_url
@@ -188,7 +189,7 @@ def _content(s: Session, course: Course, status: Status) -> CategoryResult:
         name = _topic_file_name(t)
         html = fetched.get(t["TopicId"])
         if html is not None:
-            base = BASE_URL + quote(unquote(t["Url"]), safe="/()!$'*+,;=:@-._~&")
+            base = base_url() + quote(unquote(t["Url"]), safe="/()!$'*+,;=:@-._~&")
             r.html_pages.append(HtmlPage(t["TopicId"], path, name, url(t), base, html))
         else:
             files.append((RemoteFile(path, name, url(t), None), not _is_html(t)))
@@ -452,7 +453,7 @@ def _course_files(s: Session, course: Course, status: Status, results: dict[str,
                 if data is None:
                     r.missing.append(key)
                     continue
-                for ref in css_refs(decode(data), BASE_URL + key):
+                for ref in css_refs(decode(data), base_url() + key):
                     if (k := canonical(ref.url)) and k not in wanted:
                         wanted[k] = True
                         next_round.append((k, True))

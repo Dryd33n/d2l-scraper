@@ -7,3 +7,5 @@ __pycache__/
 *.part
 tests/fixtures/
 d2l-scraper-requirements.md
+build/
+*.egg-info/

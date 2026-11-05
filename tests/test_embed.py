@@ -1,6 +1,8 @@
 import base64, re, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+import config
+config.use("https://bright.uvic.ca")
 from courses import Course
 from crawl import COURSE_FILES, CategoryResult, HtmlPage, crawl_category
 from embed import (Ref, absolute, brightspace_link, canonical, css_refs, html_refs, is_lti, local_folder,

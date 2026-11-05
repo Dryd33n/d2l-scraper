@@ -16,9 +16,8 @@ from pathlib import Path
 from typing import Iterator, Protocol
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 
-from auth import BASE_URL
+from config import base_url
 
-HOST = urlsplit(BASE_URL).netloc
 SAFE = "/()!$'*+,;=:@-._~&"  # characters left unescaped in canonical paths
 
 # which attribute of which tag holds a reference, and whether its target is embedded into the page
@@ -85,7 +84,7 @@ def absolute(url: str, base: str | None) -> str | None:
     if re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I):
         return url
     if url.startswith("/"):
-        return urljoin(BASE_URL, url)
+        return urljoin(base_url(), url)
     return urljoin(base, url) if base else None
 
 
@@ -93,7 +92,7 @@ def canonical(url: str) -> str | None:
     """The site path of a downloadable Brightspace file ("/content/enforced/…", "/shared/…", or a
     discussion post image), normalised so every spelling of the same file gives the same key."""
     parts = urlsplit(url)
-    if parts.netloc.lower() != HOST:
+    if parts.netloc.lower() != urlsplit(base_url()).netloc:
         return None
     path = posixpath.normpath(unquote(parts.path))
     if VIEW_ATTACHMENT.match(path):
@@ -131,7 +130,7 @@ def brightspace_link(url: str) -> tuple[str, str] | None:
     """What a link to a Brightspace page points at, as (kind, id): ("rcode", …) for quickLinks,
     ("content", topic), ("topic", id), ("thread", id), ("dropbox", folder), ("quiz", id)."""
     parts = urlsplit(url)
-    if parts.netloc.lower() != HOST:
+    if parts.netloc.lower() != urlsplit(base_url()).netloc:
         return None
     path, query = parts.path, {k.lower(): v[0] for k, v in parse_qs(parts.query).items()}
     if path.lower().endswith("/quicklink/quicklink.d2l") and query.get("rcode"):

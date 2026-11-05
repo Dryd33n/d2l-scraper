@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from auth import BASE_URL
+from config import base_url
 
 
 def _text(value) -> str:
@@ -95,7 +95,7 @@ def _ics_day(value: str) -> str:
 
 def write_calendar_ics(events: list[dict], path: Path) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    host = BASE_URL.removeprefix("https://")
+    host = base_url().removeprefix("https://")
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//d2l-scraper//EN", "CALSCALE:GREGORIAN"]
     for e in events:
         lines += ["BEGIN:VEVENT", f"UID:{e['CalendarEventId']}@{host}", f"DTSTAMP:{stamp}"]

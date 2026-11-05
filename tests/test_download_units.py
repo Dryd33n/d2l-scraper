@@ -1,6 +1,8 @@
 import sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+import config
+config.use("https://bright.uvic.ca")
 from download import safe_name, Namer, MAX_PATH
 from exports import _ics_fold, write_calendar_ics, write_grades_csv
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import questionary
 
 from auth import DEFAULT_PROFILE, PROFILES
+from config import DEFAULT_OUTPUT
 from courses import Course, by_term
 from crawl import CATEGORIES, COURSE_INFO, CourseCrawl, total_size
 from ui import PROMPT_STYLE, format_size, in_thread, plural
@@ -25,7 +26,6 @@ MARKDOWN_KINDS = {
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = PROJECT_DIR / "D2L Archive"  # git-ignored (.gitignore); archives hold classmates' personal data
 
 
 @dataclass
@@ -39,11 +39,9 @@ class DownloadOptions:
 
 def _check_output(text: str) -> bool | str:
     path = Path(text).expanduser().resolve()
-    in_repo = path == PROJECT_DIR or PROJECT_DIR in path.parents
-    in_ignored = path == DEFAULT_OUTPUT or DEFAULT_OUTPUT in path.parents
-    if in_repo and not in_ignored:
-        # only the default archive folder is git-ignored; anywhere else in the repo could get committed
-        return f"Inside this repository, only '{DEFAULT_OUTPUT.name}' is git-ignored. Use it or a folder outside the repo"
+    if path == PROJECT_DIR or PROJECT_DIR in path.parents:
+        # in a checkout it could get committed (archives hold personal data); in an install, an update wipes it
+        return "That's inside the program's own folder. Pick a folder outside it"
     if path.exists() and not path.is_dir():
         return "That's a file, not a folder"
     return True

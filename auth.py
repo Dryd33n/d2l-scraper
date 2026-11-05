@@ -1,6 +1,7 @@
-"""Log in to UVic Brightspace, save the session, and verify it against the Valence API."""
+"""Log in to the school's Brightspace, save the session, and verify it against the Valence API."""
 
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -12,12 +13,12 @@ from typing import Callable
 import httpx
 import keyring
 from cryptography.fernet import Fernet, InvalidToken
-from playwright.sync_api import sync_playwright, Playwright
+from keyring.errors import KeyringError, PasswordDeleteError
+from playwright.sync_api import Browser, Error as PlaywrightError, Playwright, sync_playwright
 
+from config import STATE_FILE, base_url, ensure_school
 from ui import console, ok, warn
 
-BASE_URL = "https://bright.uvic.ca"
-STATE_FILE = Path(__file__).parent / ".auth" / "state.enc"
 LOGIN_TIMEOUT_MS = 5 * 60 * 1000  # time allowed for the user to finish SSO + MFA
 
 RETRIES = 3
@@ -27,6 +28,9 @@ CHUNK = 1 << 16
 
 KEYRING_SERVICE = "d2l-scraper"
 KEYRING_USER = "session-key"
+BROWSER_CHANNELS = ("chrome", "msedge")
+
+_unsaved_state: dict | None = None  # the session, when there's no keychain to protect it on disk
 
 
 def _fernet() -> Fernet:
@@ -39,33 +43,73 @@ def _fernet() -> Fernet:
 
 
 def save_state(state: dict) -> None:
+    global _unsaved_state
+    try:
+        encrypted = _fernet().encrypt(json.dumps(state).encode())
+    except KeyringError:
+        _unsaved_state = state  # no keychain (some Linux setups): never write the session unencrypted
+        warn("No system keychain found, so you'll need to log in again next time.")
+        return
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_bytes(_fernet().encrypt(json.dumps(state).encode()))
+    STATE_FILE.write_bytes(encrypted)
 
 
 def load_state() -> dict | None:
     """Decrypt the saved session, or return None if it is missing or unreadable."""
+    if _unsaved_state is not None:
+        return _unsaved_state
     if not STATE_FILE.exists():
         return None
     try:
         return json.loads(_fernet().decrypt(STATE_FILE.read_bytes()))
-    except InvalidToken:
+    except (InvalidToken, KeyringError):
         return None  # key changed or file corrupted; treat as logged out
+
+
+def logout() -> None:
+    """Forget the saved session and its encryption key."""
+    global _unsaved_state
+    _unsaved_state = None
+    STATE_FILE.unlink(missing_ok=True)
+    try:
+        keyring.delete_password(KEYRING_SERVICE, KEYRING_USER)
+    except (PasswordDeleteError, KeyringError):
+        pass  # nothing stored
+
+
+def _launch_browser(p: Playwright) -> Browser:
+    """Open a visible browser for the login: one already on this computer if possible. Chromium is
+    only downloaded if there's neither Chrome nor Edge."""
+    for channel in BROWSER_CHANNELS:
+        try:
+            return p.chromium.launch(channel=channel, headless=False)
+        except PlaywrightError:
+            continue
+    try:
+        return p.chromium.launch(headless=False)
+    except PlaywrightError:
+        pass
+    warn("Chrome and Edge weren't found, so downloading a browser for the login window (one time only, a few hundred MB)")
+    subprocess.run([sys.executable, "-m", "playwright", "install", "--no-shell", "chromium"], check=True)
+    return p.chromium.launch(headless=False)
 
 
 def login(p: Playwright) -> None:
     """Open a headed browser, let the user log in manually, then save the session."""
-    browser = p.chromium.launch(headless=False)
-    context = browser.new_context()
-    page = context.new_page()
-    page.goto(f"{BASE_URL}/d2l/login")
-
-    with console.status("Waiting for you to log in in the browser window (SSO + MFA)..."):
-        page.wait_for_url(f"{BASE_URL}/d2l/home**", timeout=LOGIN_TIMEOUT_MS)
-
-    save_state(context.storage_state())
-    ok(f"Session saved (encrypted) to [dim]{STATE_FILE}[/]")
-    browser.close()
+    browser = _launch_browser(p)
+    try:
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(f"{base_url()}/d2l/login")
+        with console.status("Waiting for you to log in in the browser window (SSO + MFA)..."):
+            page.wait_for_url(f"{base_url()}/d2l/home**", timeout=LOGIN_TIMEOUT_MS)
+        save_state(context.storage_state())
+    except PlaywrightError:
+        console.print("[red]✗[/] The login didn't finish: the browser window was closed, it timed out, "
+                      "or the page wouldn't load. Run it again to retry.")
+        sys.exit(1)
+    finally:
+        browser.close()
 
 
 class SessionExpired(Exception):
@@ -102,7 +146,7 @@ def http_client(state: dict) -> httpx.Client:
     for c in state["cookies"]:
         cookies.set(c["name"], c["value"], domain=c["domain"], path=c["path"])
     return httpx.Client(
-        base_url=BASE_URL, cookies=cookies, follow_redirects=False,  # a login redirect must not pass for data
+        base_url=base_url(), cookies=cookies, follow_redirects=False,  # a login redirect must not pass for data
         timeout=httpx.Timeout(60.0), limits=httpx.Limits(max_connections=max(p.workers for p in PROFILES.values()) * 2),
     )
 
@@ -281,6 +325,7 @@ def _open_session(p: Playwright) -> Session | None:
 
 def connect(p: Playwright) -> Session:
     """Return a verified Session, prompting for a browser login if the saved one is invalid."""
+    ensure_school()
     with console.status("Checking saved session..."):
         session = _open_session(p)
     if session is None:

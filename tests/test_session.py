@@ -37,7 +37,7 @@ def handler(request: httpx.Request) -> httpx.Response:
             active[0] -= 1
 
 def session(workers):
-    client = httpx.Client(base_url=auth.BASE_URL, transport=httpx.MockTransport(handler))
+    client = httpx.Client(base_url="https://bright.uvic.ca", transport=httpx.MockTransport(handler))
     return Session(client, {"lp": "1.0", "le": "1.0"}, {}, workers)
 
 for workers in (3, 6, 12):

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d2l-scraper"
+version = "1.0.0"
+description = "Archive your own D2L Brightspace courses and turn them into study material."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.49",
+    "keyring",
+    "cryptography",
+    "questionary",
+    "rich",
+    "markdownify",
+    "httpx",
+    "beautifulsoup4",
+    "pypdf",
+    "pillow",
+    "platformdirs",
+]
+
+[project.scripts]
+d2l-scraper = "cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "auth", "cli", "config", "courses", "crawl", "download", "embed", "exports", "main",
+    "markdown_copy", "pages", "prompts", "quiz_attempts", "review", "runlog", "studypack", "ui",
+]

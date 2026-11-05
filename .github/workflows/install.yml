@@ -1,0 +1,33 @@
+name: Install
+
+# A fresh install on clean machines: the installer has to work with nothing set up in advance.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      D2L_SCRAPER_SOURCE: ${{ github.workspace }}
+      D2L_SCRAPER_NO_START: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Get-Content -Raw install.ps1 | iex
+          & "$HOME\.local\bin\d2l-scraper.exe" --version
+
+      - name: Run the installer (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: |
+          sh install.sh < /dev/null
+          "$HOME/.local/bin/d2l-scraper" --version

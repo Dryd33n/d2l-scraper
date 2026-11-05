@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
-from auth import BASE_URL
+from config import base_url
 from crawl import COURSE_INFO, LABELS, CategoryResult, CourseCrawl, HtmlPage, walk_toc
 from markdown_copy import to_markdown
 from embed import absolute, brightspace_link, canonical, decode, is_lti, rewrite_html, view_attachment
@@ -175,7 +175,7 @@ def rich(value) -> str:
             value = value["Content"] if value.get("Type") == 2 else _plain(value["Content"])
         else:
             value = value.get("Html") or _plain(value.get("Text"))
-    return re.sub(r"""(\b(?:src|href)\s*=\s*["'])/(?!/)""", rf"\1{BASE_URL}/", value or "")
+    return re.sub(r"""(\b(?:src|href)\s*=\s*["'])/(?!/)""", rf"\1{base_url()}/", value or "")
 
 
 def _plain(text: str | None) -> str:
@@ -639,7 +639,7 @@ TOOL_SHORTCUTS = {3, 4, 5, 6}  # links to another Brightspace tool, archived in 
 
 
 def _topic_url(topic: dict) -> str | None:
-    return absolute(topic.get("Url") or "", BASE_URL + "/")
+    return absolute(topic.get("Url") or "", base_url() + "/")
 
 
 def _local_topic(topic_id: int, ctx: Context) -> str | None:
