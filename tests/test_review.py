@@ -1,6 +1,6 @@
 from pathlib import Path
 import pickle, sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from playwright.sync_api import sync_playwright

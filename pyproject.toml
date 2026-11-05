@@ -26,6 +26,7 @@ dependencies = [
 d2l-scraper = "cli:main"
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 py-modules = [
     "auth", "cli", "config", "courses", "crawl", "download", "embed", "exports", "main",
     "markdown_copy", "pages", "prompts", "quiz_attempts", "review", "runlog", "studypack", "ui",

@@ -7,7 +7,7 @@ and images); pages, assignments, discussions, and quiz questions become Markdown
 many sources, PDFs are merged per module, then per top-level module, then slides and documents are
 turned into text, and only then is anything left out (listed in the manifest).
 
-Run on its own (`python studypack.py`) to rebuild packs from an existing archive, or tick courses in
+Run on its own (`python src/studypack.py`) to rebuild packs from an existing archive, or tick courses in
 the main run's "Build a study pack for" question.
 """
 

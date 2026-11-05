@@ -25,7 +25,8 @@ MARKDOWN_KINDS = {
 }
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
+_HERE = Path(__file__).resolve().parent
+PROJECT_DIR = _HERE.parent if _HERE.name == "src" else _HERE  # the repo root in a checkout, site-packages in an install
 
 
 @dataclass

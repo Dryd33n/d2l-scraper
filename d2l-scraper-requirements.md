@@ -395,7 +395,7 @@ DONE (phase 5, `runlog.py`); decided 2026-09-26: a log in each course folder plu
 
 ## 11. Study pack for NotebookLM — DONE (2026-10-05)
 
-Built in `studypack.py` (`python studypack.py [archive]` on its own; "Build a study pack for NotebookLM for:" after the course picker in the main run). Answer keys come from `quiz_attempts.study_card`. Implementation notes:
+Built in `studypack.py` (`python src/studypack.py [archive]` on its own; "Build a study pack for NotebookLM for:" after the course picker in the main run). Answer keys come from `quiz_attempts.study_card`. Implementation notes:
 - Pages: the `.md` copy when there is one, else the `.html` converted; breadcrumb, page title, and footer dropped (each page is merged under its own heading); images become `[image]`
 - Content order: `content.json` topic order per module, then anything else alphabetically; each top-level module's text document comes first in that module. `content.html`/`links.html` at the content root are skipped (the outline is in the overview)
 - Code and text files (`.java`, `.c`, `.asm`, `.tex`, `.txt`, …, up to 200 KB) go into the module's text document in code blocks, also when attached to assignments
@@ -414,7 +414,7 @@ Goal: per course, a small set of clean sources to upload to a NotebookLM (Gemini
 **Decisions (2026-10-05):**
 1. **Entry points:**
    - **In the main run (decided 2026-10-05):** right after the course picker, a checkbox "Build a study pack for:" lists the courses just picked, none ticked (enter skips it). Packs are built after the download finishes, from what's on disk, so files from earlier runs count too. The summary prints each pack's folder and source count; the course's download log records the build.
-   - **`python studypack.py`:** the same builder, offline over an existing archive (no login, no Brightspace requests); pick from the archive's course folders. For rebuilding a pack without downloading again.
+   - **`python src/studypack.py`:** the same builder, offline over an existing archive (no login, no Brightspace requests); pick from the archive's course folders. For rebuilding a pack without downloading again.
    - Either way, re-running rebuilds the pack from scratch.
    - If a category the pack draws on (content, assignments, quizzes, discussions, announcements) is unticked in the category picker, the pack uses whatever an earlier run left on disk, and the manifest says which parts are missing.
 2. **One pack per course.** Combined multi-course packs: later, if wanted.

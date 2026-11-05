@@ -1,6 +1,6 @@
 import sys, tempfile
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import download
 from auth import ApiError, SessionExpired
 from courses import Course

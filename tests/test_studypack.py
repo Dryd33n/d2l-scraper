@@ -1,6 +1,6 @@
 import io, json, re, sys, tempfile, zipfile
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import config
 config.use("https://bright.uvic.ca")
 from pypdf import PdfReader, PdfWriter

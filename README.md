@@ -96,7 +96,7 @@ cd d2l-scraper
 python -m venv .venv
 .venv/Scripts/activate      # macOS / Linux: source .venv/bin/activate
 pip install -e .
-python cli.py
+d2l-scraper
 ```
 
 Tests are plain scripts, for example `python tests/test_setup.py`. `tests/test_auth.py` needs a real login. Design notes are in [`d2l-scraper-requirements.md`](d2l-scraper-requirements.md).

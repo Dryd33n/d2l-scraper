@@ -1,7 +1,7 @@
 """Schools, the login browser, no-keychain fallback, logout, and plain-language errors. No network."""
 import os, sys, tempfile
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 os.environ["D2L_SCRAPER_HOME"] = tempfile.mkdtemp()  # never touch the real login or settings
 import httpx
 import keyring

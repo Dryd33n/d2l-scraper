@@ -1,7 +1,7 @@
 import sys, tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import keyring
 import auth
 from playwright.sync_api import sync_playwright

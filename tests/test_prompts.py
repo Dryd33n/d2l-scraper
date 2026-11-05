@@ -1,6 +1,6 @@
 import functools, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import questionary
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
